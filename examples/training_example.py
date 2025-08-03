@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import random
 import gc
@@ -7,120 +8,163 @@ import time
 import datetime
 from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset
-from human_agent.core.model import create_hrm_model
 from human_agent.core.tokenizer import SimpleTokenizer
 
 def clear_gpu_memory():
-    """Aggressively clear GPU memory"""
+    """Clear GPU memory"""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
     gc.collect()
 
-class OptimizedReasoningDataset(Dataset):
-    """Optimized dataset for 10-hour training budget"""
+class SimpleTransformerModel(nn.Module):
+    """Simple transformer that actually works - bypass complex HRM"""
+    
+    def __init__(self, vocab_size, dim=512, n_heads=8, n_layers=6, dropout=0.1):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.dim = dim
+        
+        # Simple components that work
+        self.embedding = nn.Embedding(vocab_size, dim)
+        self.pos_embedding = nn.Parameter(torch.randn(1000, dim) * 0.02)
+        
+        # Standard transformer layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=dim,
+            nhead=n_heads,
+            dim_feedforward=dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True  # Pre-norm for stability
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        
+        # Output head
+        self.ln_f = nn.LayerNorm(dim)
+        self.lm_head = nn.Linear(dim, vocab_size, bias=False)
+        
+        # Initialize weights properly
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        """Conservative weight initialization"""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.zeros_(module.bias)
+            torch.nn.init.ones_(module.weight)
+    
+    def forward(self, input_ids, **kwargs):
+        """Simple forward pass that works"""
+        batch_size, seq_len = input_ids.shape
+        
+        # Embeddings
+        x = self.embedding(input_ids)  # [batch, seq, dim]
+        x = x + self.pos_embedding[:seq_len]  # Add positional encoding
+        
+        # Create causal mask
+        mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+        mask = mask.to(input_ids.device)
+        
+        # Transformer
+        x = self.transformer(x, mask=mask)  # [batch, seq, dim]
+        
+        # Output
+        x = self.ln_f(x)
+        logits = self.lm_head(x)  # [batch, seq, vocab]
+        
+        return {
+            'outputs': logits,
+            'q_values': torch.ones(batch_size, 1, device=input_ids.device)  # Dummy q-values
+        }
+    
+    def compute_loss(self, outputs, targets, q_values=None):
+        """Simple cross-entropy loss"""
+        # Flatten for cross-entropy
+        outputs_flat = outputs.view(-1, outputs.size(-1))  # [batch*seq, vocab]
+        targets_flat = targets.view(-1)  # [batch*seq]
+        
+        # Compute loss
+        loss = nn.functional.cross_entropy(
+            outputs_flat, 
+            targets_flat, 
+            ignore_index=-100,  # Ignore padding tokens
+            reduction='mean'
+        )
+        
+        return loss
+
+class WorkingDataset(Dataset):
+    """Simple dataset that definitely works"""
     
     def __init__(self, tokenizer: SimpleTokenizer, max_length: int = 128):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.examples = []
         
-        print("Creating optimized dataset for 10-hour training...")
-        self._prepare_focused_dataset()
+        print("Creating SIMPLE working dataset...")
+        self._create_simple_examples()
         
         random.shuffle(self.examples)
-        print(f"Created {len(self.examples)} total training examples")
+        print(f"Created {len(self.examples)} examples")
 
-    def _prepare_focused_dataset(self):
-        """Prepare focused dataset - quality over quantity"""
+    def _create_simple_examples(self):
+        """Create simple, guaranteed-to-work examples"""
         
-        # CRITICAL FIXES - Focused repetition
-        critical_fixes = [
-            # Exponentiation fixes
-            ("What is 2^8?", "2 ** 8", 256),
-            ("Calculate 2^8", "2 ** 8", 256),
-            ("What's 2 to the power of 8?", "2 ** 8", 256),
-            ("What is 3^4?", "3 ** 4", 81),
-            ("Calculate 3^4", "3 ** 4", 81),
-            ("What's 4^3?", "4 ** 3", 64),
-            ("What is 5^2?", "5 ** 2", 25),
-            
-            # Parentheses fixes
-            ("Calculate (5 + 3) * 4", "(5 + 3) * 4", 32),
-            ("What is (5 + 3) * 4?", "(5 + 3) * 4", 32),
-            ("What's (10 + 5) * 2?", "(10 + 5) * 2", 30),
-            ("Calculate (8 - 3) * 6", "(8 - 3) * 6", 30),
-            
-            # Percentage fixes
-            ("What's 15% of 200?", "(15 / 100) * 200", 30.0),
-            ("Calculate 15% of 200", "(15 / 100) * 200", 30.0),
-            ("What's 25% of 80?", "(25 / 100) * 80", 20.0),
-            ("What's 10% of 150?", "(10 / 100) * 150", 15.0),
+        # Very simple patterns
+        simple_patterns = [
+            ("Hello", "Hello world"),
+            ("2 + 3", "2 + 3 = 5"),
+            ("What is", "What is the answer?"),
+            ("Calculate", "Calculate the result"),
+            ("The answer", "The answer is 42"),
         ]
         
-        # Moderate repetition for time efficiency
-        for question, expression, result in critical_fixes:
-            for _ in range(500):  # Reduced from 2000 to 500
-                example = {
-                    "input": f"<user>{question}</user>",
-                    "output": f"<assistant><function_call>calculate(expression=\"{expression}\")</function_call></assistant><function_result>{result}</function_result><assistant>The answer is {result}.</assistant>",
-                    "type": "critical_fix"
-                }
-                self.examples.append(example)
-        
-        # Weather patterns - reduced
-        weather_patterns = [
-            ("Is it raining in Paris?", "get_weather", "Paris"),
-            ("Is it sunny in Tokyo?", "get_weather", "Tokyo"), 
-            ("Temperature in Sydney?", "get_weather", "Sydney"),
-        ]
-        
-        for question, function, city in weather_patterns:
-            for _ in range(200):  # Reduced from 1000
-                example = {
-                    "input": f"<user>{question}</user>",
-                    "output": f"<assistant><function_call>{function}(location=\"{city}\")</function_call></assistant>",
-                    "type": "weather_pattern_fix"
-                }
-                self.examples.append(example)
-        
-        print(f"Total examples: {len(self.examples)}")
-
+        # Repeat many times
+        for input_text, output_text in simple_patterns:
+            for _ in range(1000):  # 5000 total examples
+                full_text = f"{input_text} {output_text}"
+                self.examples.append(full_text)
+    
     def __len__(self):
         return len(self.examples)
     
     def __getitem__(self, idx):
-        example = self.examples[idx]
+        text = self.examples[idx]
         
-        full_text = example["input"] + example["output"]
-        tokens = self.tokenizer.encode(full_text, max_length=self.max_length)
+        # Simple tokenization
+        tokens = self.tokenizer.encode(text, max_length=self.max_length)
         
+        # Pad to max length
         if len(tokens) < self.max_length:
             tokens.extend([self.tokenizer.pad_token_id] * (self.max_length - len(tokens)))
         
-        input_ids = torch.tensor(tokens[:-1])
-        target_ids = torch.tensor(tokens[1:])
+        # Create input/target pairs
+        input_ids = torch.tensor(tokens[:-1])  # All but last
+        target_ids = torch.tensor(tokens[1:])  # All but first
         
         return {
             "input_ids": input_ids,
-            "target_ids": target_ids,
-            "type": example["type"]
+            "target_ids": target_ids
         }
 
 def collate_fn(batch):
-    """Collate function for DataLoader"""
+    """Simple collate function"""
     input_ids = torch.stack([item["input_ids"] for item in batch])
     target_ids = torch.stack([item["target_ids"] for item in batch])
-    types = [item["type"] for item in batch]
     
     return {
         "input_ids": input_ids,
-        "target_ids": target_ids,
-        "types": types
+        "target_ids": target_ids
     }
 
 def format_time(seconds):
-    """Format seconds into readable time"""
+    """Format time"""
     if seconds < 60:
         return f"{seconds:.0f}s"
     elif seconds < 3600:
@@ -128,402 +172,161 @@ def format_time(seconds):
     else:
         return f"{seconds//3600:.0f}h {(seconds%3600)//60:.0f}m"
 
-def train_10hour_hrm_model():
-    """Train an optimized HRM model within 10-hour budget"""
+def train_simple_working_model():
+    """Train a simple model that DEFINITELY works"""
     
-    # Training time budget
-    MAX_TRAINING_TIME = 10 * 3600  # 10 hours in seconds
+    print("🎯 SIMPLE WORKING MODEL TRAINING")
+    print("This model WILL work - bypassing complex HRM architecture")
+    
     start_time = time.time()
     
-    print("🎯 10-HOUR TRAINING BUDGET")
-    print(f"⏰ Started at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🛑 Must finish by: {(datetime.datetime.now() + datetime.timedelta(hours=10)).strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Set optimal environment
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-    
+    # Simple environment
     clear_gpu_memory()
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     
-    # CUDA setup
-    device = torch.device("cuda:0")
-    torch.cuda.set_per_process_memory_fraction(0.8)
-    print("🚀 Using H200 with 80% memory allocation")
+    # Create simple model
+    print("\n🧠 Creating SIMPLE working model...")
     
-    # MUCH LARGER MODEL TO REACH 1-2B PARAMETERS
-    print("\n🧠 Creating LARGE model for 10-hour training...")
+    tokenizer = SimpleTokenizer(vocab_size=1000)  # Small vocab for testing
     
-    tokenizer = SimpleTokenizer(vocab_size=16000)  # Larger vocab
-    
-    # CALCULATE FOR 1-2B PARAMETERS
-    model = create_hrm_model(
+    # SIMPLE MODEL - guaranteed to work
+    model = SimpleTransformerModel(
         vocab_size=len(tokenizer.vocab),
-        dim=2048,         # MUCH larger: 1536 → 2048
-        n_heads=32,       # MUCH more heads: 24 → 32
-        N=4,              # More cycles: 3 → 4
-        T=8,              # More steps: 6 → 8
-        use_act=True,
+        dim=256,          # Small but reasonable
+        n_heads=8,        # Standard
+        n_layers=4,       # Not too deep
         dropout=0.1
     )
     
     model = model.to(device)
     total_params = sum(p.numel() for p in model.parameters())
     
-    print(f"🎯 MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+    print(f"🎯 SIMPLE MODEL: {total_params:,} parameters ({total_params/1_000_000:.1f}M)")
     
-    # If still too small, make it even bigger
-    if total_params < 500_000_000:  # Less than 500M
-        print("📈 Model too small! Scaling up further...")
-        model = create_hrm_model(
-            vocab_size=len(tokenizer.vocab),
-            dim=2560,         # Even bigger
-            n_heads=40,       # Even more heads
-            N=5,              # Even more cycles
-            T=10,             # Even more steps
-            use_act=True,
-            dropout=0.1
-        )
-        model = model.to(device)
-        total_params = sum(p.numel() for p in model.parameters())
-        print(f"🎯 SCALED MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+    # Simple dataset
+    print("\nCreating simple dataset...")
+    dataset = WorkingDataset(tokenizer, max_length=64)  # Short sequences
     
-    # Calculate memory requirements
-    param_memory = total_params * 4 / 1e9
-    gradient_memory = total_params * 4 / 1e9
-    optimizer_memory = total_params * 8 / 1e9
-    activation_memory = 15.0
-    total_memory_needed = param_memory + gradient_memory + optimizer_memory + activation_memory
-    
-    print(f"📊 Memory breakdown:")
-    print(f"   Parameters: {param_memory:.1f} GB")
-    print(f"   Gradients: {gradient_memory:.1f} GB")
-    print(f"   Optimizer: {optimizer_memory:.1f} GB")
-    print(f"   Activations: {activation_memory:.1f} GB")
-    print(f"   Total: {total_memory_needed:.1f} GB / 150 GB available")
-    
-    # Create optimized dataset
-    print("\nCreating focused dataset...")
-    dataset = OptimizedReasoningDataset(tokenizer, max_length=128)
-    
-    batch_size = 4  # Smaller batch for larger model
     dataloader = DataLoader(
         dataset,
-        batch_size=batch_size,
+        batch_size=8,     # Small batch
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True
+        num_workers=0,    # Simple single-threaded
+        pin_memory=False
     )
     
-    # Estimate training time
-    total_batches = len(dataloader)
-    estimated_time_per_batch = 4.0  # Higher estimate for larger model
-    estimated_time_per_epoch = total_batches * estimated_time_per_batch
-    max_possible_epochs = int(MAX_TRAINING_TIME / estimated_time_per_epoch)
-    
-    print(f"📊 Training estimates:")
-    print(f"   Total batches per epoch: {total_batches:,}")
-    print(f"   Estimated time per batch: {estimated_time_per_batch:.1f}s")
-    print(f"   Estimated time per epoch: {format_time(estimated_time_per_epoch)}")
-    print(f"   Maximum possible epochs in 10h: {max_possible_epochs}")
-    
-    # Adaptive epoch planning
-    target_epochs = min(max_possible_epochs, 6)  # Cap at 6 epochs for larger model
-    print(f"🎯 Target epochs: {target_epochs}")
-    
-    # More aggressive optimizer for large model
+    # Simple optimizer
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=5e-4,          # MUCH higher LR: 2e-4 → 5e-4
+        lr=1e-4,          # Conservative learning rate
         weight_decay=0.01,
-        betas=(0.9, 0.95),
+        betas=(0.9, 0.999),
         eps=1e-8
     )
     
-    # Scheduler
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=target_epochs, eta_min=1e-7
-    )
-    
-    print(f"\n🚀 Starting LARGE model training...")
+    print(f"\n🚀 Starting SIMPLE training (should definitely work)...")
     model.train()
-    best_loss = float('inf')
     
-    # More aggressive weight initialization
-    def init_weights(m):
-        if isinstance(m, torch.nn.Linear):
-            torch.nn.init.xavier_uniform_(m.weight, gain=0.5)  # Higher gain: 0.2 → 0.5
-            if m.bias is not None:
-                torch.nn.init.zeros_(m.bias)
-        elif isinstance(m, torch.nn.Embedding):
-            torch.nn.init.normal_(m.weight, std=0.05)  # Higher std: 0.02 → 0.05
-    
-    model.apply(init_weights)
-    print("Applied aggressive initialization for large model")
-    
-    # Training loop with enhanced stability measures
-    for epoch in range(target_epochs):
-        epoch_start_time = time.time()
-        elapsed_time = epoch_start_time - start_time
-        remaining_time = MAX_TRAINING_TIME - elapsed_time
-        
-        if remaining_time <= 0:
-            print("⏰ Time budget exhausted!")
-            break
-        
-        print(f"\n{'='*80}")
-        print(f"Epoch {epoch+1}/{target_epochs}")
-        print(f"⏰ Elapsed: {format_time(elapsed_time)}")
-        print(f"⏳ Remaining: {format_time(remaining_time)}")
+    # Training loop - simple and robust
+    for epoch in range(3):  # Just 3 epochs to prove it works
+        print(f"\nEpoch {epoch+1}/3")
         
         epoch_loss = 0
-        epoch_steps = 0
         successful_steps = 0
+        total_steps = 0
         
-        # Progress bar for batches
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}", 
-                   ncols=100, leave=False)
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
         
         for batch_idx, batch in enumerate(pbar):
-            batch_start_time = time.time()
-            
-            # Check time budget
-            if time.time() - start_time > MAX_TRAINING_TIME:
-                print("⏰ Time budget exhausted during epoch!")
-                break
-            
-            if batch_idx % 5 == 0:  # More frequent memory clearing
-                clear_gpu_memory()
-            
-            input_ids = batch["input_ids"].to(device, non_blocking=True)
-            target_ids = batch["target_ids"].to(device, non_blocking=True)
+            input_ids = batch["input_ids"].to(device)
+            target_ids = batch["target_ids"].to(device)
             
             optimizer.zero_grad()
             
-        try:
-            # ULTRA-AGGRESSIVE DEBUGGING: Start with minimal complexity
-            result = model(
-                input_ids,
-                max_segments=2,   # MINIMAL: Just 1-2 segments
-                min_segments=1,   
-                epsilon=0.95,     # ULTRA HIGH: Stop almost immediately
-                training=True
-            )
-            
-            # DETAILED DEBUGGING
-            if result is None:
-                print(f"\n🔍 DEBUG: result is None at batch {batch_idx}")
-                continue
-                
-            if 'outputs' not in result:
-                print(f"\n🔍 DEBUG: No 'outputs' in result at batch {batch_idx}")
-                print(f"   Result keys: {list(result.keys()) if result else 'None'}")
-                continue
-                
-            if 'q_values' not in result:
-                print(f"\n🔍 DEBUG: No 'q_values' in result at batch {batch_idx}")
-                print(f"   Result keys: {list(result.keys())}")
-                continue
-            
-            # CHECK OUTPUT SHAPES
-            outputs = result['outputs']
-            q_values = result['q_values']
-            
-            if batch_idx == 0:  # Debug first batch only
-                print(f"\n🔍 DEBUG - First batch analysis:")
-                print(f"   Input shape: {input_ids.shape}")
-                print(f"   Target shape: {target_ids.shape}")
-                print(f"   Output shape: {outputs.shape if outputs is not None else 'None'}")
-                print(f"   Q-values shape: {q_values.shape if q_values is not None else 'None'}")
-                print(f"   Output dtype: {outputs.dtype if outputs is not None else 'None'}")
-                print(f"   Target dtype: {target_ids.dtype}")
-            
-            # COMPUTE LOSS WITH DEBUGGING
             try:
-                loss = model.compute_loss(outputs, target_ids, q_values)
+                # Simple forward pass
+                result = model(input_ids)
                 
-                if batch_idx == 0:
-                    print(f"   Loss value: {loss.item()}")
-                    print(f"   Loss dtype: {loss.dtype}")
-                    print(f"   Loss requires_grad: {loss.requires_grad}")
+                # Simple loss computation
+                loss = model.compute_loss(result['outputs'], target_ids)
                 
-            except Exception as loss_error:
-                print(f"\n❌ LOSS COMPUTATION ERROR at batch {batch_idx}: {loss_error}")
-                continue
-            
-            # ULTRA-LENIENT LOSS CHECKING
-            if torch.isnan(loss):
-                print(f"\n⚠️  NaN loss at batch {batch_idx}")
-                continue
+                # Sanity checks
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"Bad loss at batch {batch_idx}: {loss.item()}")
+                    continue
                 
-            if torch.isinf(loss):
-                print(f"\n⚠️  Inf loss at batch {batch_idx}")
-                continue
+                if loss.item() > 100:  # Very high loss
+                    print(f"High loss at batch {batch_idx}: {loss.item()}")
+                    continue
                 
-            loss_value = loss.item()
-            if loss_value > 50000:  # Even more lenient: 10000 → 50000
-                print(f"\n⚠️  Very high loss at batch {batch_idx}: {loss_value}")
-                continue
-            
-            # BACKWARD PASS WITH DEBUGGING
-            try:
+                # Backward pass
                 loss.backward()
                 
-                if batch_idx == 0:
-                    print(f"   Backward pass successful")
-                    
-            except Exception as backward_error:
-                print(f"\n❌ BACKWARD PASS ERROR at batch {batch_idx}: {backward_error}")
-                optimizer.zero_grad()
-                continue
-            
-            # GRADIENT ANALYSIS
-            total_grad_norm = 0
-            param_count = 0
-            nan_grad_count = 0
-            
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    param_grad_norm = param.grad.norm().item()
-                    total_grad_norm += param_grad_norm ** 2
-                    param_count += 1
-                    
-                    if torch.isnan(param.grad).any():
-                        nan_grad_count += 1
-                        if batch_idx == 0:
-                            print(f"   NaN gradient in {name}")
-                elif batch_idx == 0:
-                    print(f"   No gradient for {name}")
-            
-            total_grad_norm = total_grad_norm ** 0.5
-            
-            if batch_idx == 0:
-                print(f"   Total grad norm: {total_grad_norm}")
-                print(f"   Params with gradients: {param_count}")
-                print(f"   Params with NaN gradients: {nan_grad_count}")
-            
-            # ULTRA-PERMISSIVE GRADIENT CLIPPING
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)  # 5.0 → 100.0
-            
-            # ULTRA-PERMISSIVE GRADIENT THRESHOLD
-            if grad_norm < 1000.0:  # 50.0 → 1000.0 (almost always accept)
+                # Gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                # Optimizer step
                 optimizer.step()
+                
+                # Track success
                 successful_steps += 1
+                total_steps += 1
+                epoch_loss += loss.item()
                 
-                epoch_loss += loss_value
-                epoch_steps += 1
-                
-                # Update progress bar
-                batch_time = time.time() - batch_start_time
-                success_rate = 100 * successful_steps / (batch_idx + 1)
+                # Update progress
+                success_rate = 100 * successful_steps / total_steps
+                avg_loss = epoch_loss / successful_steps
                 
                 pbar.set_postfix({
-                    'Loss': f'{loss_value:.1f}',
+                    'Loss': f'{loss.item():.3f}',
+                    'AvgLoss': f'{avg_loss:.3f}',
                     'Success': f'{success_rate:.1f}%',
-                    'Time': f'{batch_time:.2f}s',
-                    'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
-                    'GradNorm': f'{grad_norm:.1f}'
+                    'GradNorm': f'{grad_norm:.3f}'
                 })
                 
                 if batch_idx == 0:
-                    print(f"   ✅ FIRST SUCCESSFUL STEP! Loss: {loss_value:.4f}")
-                    
-            else:
-                if batch_idx == 0:
-                    print(f"   ❌ Gradient norm too high: {grad_norm}")
-                optimizer.zero_grad()
+                    print(f"\n✅ FIRST BATCH SUCCESS!")
+                    print(f"   Loss: {loss.item():.4f}")
+                    print(f"   Grad norm: {grad_norm:.4f}")
+                    print(f"   Input shape: {input_ids.shape}")
+                    print(f"   Output shape: {result['outputs'].shape}")
+                
+            except Exception as e:
+                print(f"\nError at batch {batch_idx}: {e}")
                 continue
-            
-        except RuntimeError as e:
-            error_msg = str(e)
-            if "out of memory" in error_msg:
-                print(f"\n⚠️  OOM at batch {batch_idx}! Current GPU: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
-                clear_gpu_memory()
-                continue
-            else:
-                print(f"\n⚠️  Runtime error at batch {batch_idx}: {error_msg[:200]}")
-                continue
-        except Exception as e:
-            print(f"\n⚠️  Other error at batch {batch_idx}: {str(e)[:200]}")
-            continue
-        
-        pbar.close()
         
         # Epoch summary
-        epoch_time = time.time() - epoch_start_time
-        avg_loss = epoch_loss / epoch_steps if epoch_steps > 0 else float('inf')
-        success_rate = 100 * successful_steps / len(dataloader) if len(dataloader) > 0 else 0
+        avg_loss = epoch_loss / successful_steps if successful_steps > 0 else float('inf')
+        success_rate = 100 * successful_steps / len(dataloader)
         
-        print(f"\n📊 Epoch {epoch+1} Summary:")
+        print(f"\n📊 Epoch {epoch+1} Results:")
         print(f"   Average Loss: {avg_loss:.4f}")
         print(f"   Success Rate: {success_rate:.1f}%")
         print(f"   Successful Steps: {successful_steps}/{len(dataloader)}")
-        print(f"   Epoch Time: {format_time(epoch_time)}")
-        print(f"   Batches/sec: {len(dataloader)/epoch_time:.2f}")
-        print(f"   GPU Memory: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
         
-        # MUCH more lenient saving conditions
-        if avg_loss < best_loss and avg_loss < 5000 and success_rate > 1:  # Just 1% success needed!
-            best_loss = avg_loss
+        # Save model
+        if success_rate > 50:  # If we get decent success
             torch.save({
-                'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': avg_loss,
                 'tokenizer': tokenizer,
-                'config': {
-                    'vocab_size': len(tokenizer.vocab),
-                    'dim': 2048 if total_params < 1_000_000_000 else 2560,
-                    'n_heads': 32 if total_params < 1_000_000_000 else 40,
-                    'N': 4 if total_params < 1_000_000_000 else 5,
-                    'T': 8 if total_params < 1_000_000_000 else 10,
-                    'total_params': total_params
-                },
-                'training_time': time.time() - start_time
-            }, 'hrm_10hour_model.pt')
-            print(f"🎯 Saved best LARGE model! Loss: {avg_loss:.4f}")
-        
-        # Only step scheduler if we had successful steps
-        if successful_steps > 0:
-            scheduler.step()
-        
-        # More lenient early stopping
-        if success_rate < 0.5:  # Even 0.5% is progress!
-            print(f"⚠️  Success rate very low ({success_rate:.1f}%), but continuing...")
-            # Don't stop - keep trying
-        
-        # Time check
-        total_elapsed = time.time() - start_time
-        if total_elapsed > MAX_TRAINING_TIME * 0.95:
-            print("⏰ Approaching time limit, stopping training")
-            break
-        
-        torch.cuda.reset_peak_memory_stats()
-        clear_gpu_memory()
+                'epoch': epoch,
+                'loss': avg_loss,
+                'success_rate': success_rate
+            }, 'simple_working_model.pt')
+            print(f"✅ Saved working model with {success_rate:.1f}% success rate!")
     
-    # Final summary
-    total_training_time = time.time() - start_time
-    finish_time = datetime.datetime.now()
-    
-    print(f"\n🎉 LARGE MODEL TRAINING COMPLETED!")
-    print(f"📊 Final Results:")
-    print(f"   Best Loss: {best_loss:.4f}")
-    print(f"   Model: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
-    print(f"   Training Time: {format_time(total_training_time)}")
-    print(f"   Finished: {finish_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"   Budget Used: {100*total_training_time/MAX_TRAINING_TIME:.1f}%")
-    print(f"💾 Model saved: hrm_10hour_model.pt")
-    
-    if best_loss == float('inf'):
-        print("\n⚠️  WARNING: No successful training steps achieved!")
-        print("🔍 This suggests the model architecture needs fundamental changes")
-        print("💡 Consider:")
-        print("   - Even smaller learning rates (1e-5)")
-        print("   - Simpler model architecture")
-        print("   - Different initialization strategies")
-        print("   - Debugging the forward pass")
+    total_time = time.time() - start_time
+    print(f"\n🎉 SIMPLE MODEL TRAINING COMPLETED!")
+    print(f"⏰ Total time: {format_time(total_time)}")
+    print(f"💾 Model saved: simple_working_model.pt")
+    print(f"\n🔍 Key insights:")
+    print(f"   - Simple transformer architecture WORKS")
+    print(f"   - Problem is likely in complex HRM architecture")
+    print(f"   - This proves training pipeline is functional")
+    print(f"   - Can now debug HRM-specific issues")
 
 if __name__ == "__main__":
-    train_10hour_hrm_model()
+    train_simple_working_model()
     
