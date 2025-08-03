@@ -192,12 +192,12 @@ def train_10hour_hrm_model():
     """Train an optimized HRM model within 10-hour budget"""
     
     # Training time budget
-    MAX_TRAINING_TIME = 10 * 3600  # 10 hours in seconds
+    MAX_TRAINING_TIME = 20 * 3600  # 20 hours in seconds
     start_time = time.time()
-    
-    print("🎯 10-HOUR TRAINING BUDGET")
+
+    print("🎯 20-HOUR TRAINING BUDGET")
     print(f"⏰ Started at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🛑 Must finish by: {(datetime.datetime.now() + datetime.timedelta(hours=10)).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🛑 Must finish by: {(datetime.datetime.now() + datetime.timedelta(hours=20)).strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Set optimal environment
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
@@ -272,7 +272,7 @@ def train_10hour_hrm_model():
     print(f"   Maximum possible epochs in 10h: {max_possible_epochs}")
     
     # Adaptive epoch planning
-    target_epochs = min(max_possible_epochs, 6)  # Cap at 6 epochs for larger model
+    target_epochs = max(1, min(max_possible_epochs, 6))
     print(f"🎯 Target epochs: {target_epochs}")
     
     # More aggressive optimizer for large model
@@ -601,4 +601,3 @@ def train_10hour_hrm_model():
 
 if __name__ == "__main__":
     train_10hour_hrm_model()
-    
