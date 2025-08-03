@@ -1,0 +1,1 @@
+"""Core HRM model components"""
