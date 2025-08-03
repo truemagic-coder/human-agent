@@ -230,21 +230,6 @@ def train_10hour_hrm_model():
     
     print(f"🎯 MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
     
-    # If still too small, make it even bigger
-    if total_params < 500_000_000:  # Less than 500M
-        print("📈 Model too small! Scaling up further...")
-        model = create_hrm_model(
-            vocab_size=len(tokenizer.vocab),
-            dim=2560,         # Even bigger
-            n_heads=40,       # Even more heads
-            N=5,              # Even more cycles
-            T=10,             # Even more steps
-            dropout=0.1
-        )
-        model = model.to(device)
-        total_params = sum(p.numel() for p in model.parameters())
-        print(f"🎯 SCALED MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
-    
     # Calculate memory requirements
     param_memory = total_params * 4 / 1e9
     gradient_memory = total_params * 4 / 1e9
