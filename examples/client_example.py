@@ -321,8 +321,8 @@ def show_api_info():
     if model_info:
         print("\n🧠 Model Information:")
         print(f"   Name: {model_info.get('model_name', 'Unknown')}")
-        print(f"   Parameters: {model_info.get('parameters', 'Unknown'):,}")
-        print(f"   Vocabulary: {model_info.get('vocabulary_size', 'Unknown'):,}")
+        print(f"   Parameters: {model_info.get('parameters', 'Unknown')}")
+        print(f"   Vocabulary: {model_info.get('vocabulary_size', 'Unknown')}")
         print(f"   Device: {model_info.get('device', 'Unknown')}")
         
         arch = model_info.get('architecture', {})
