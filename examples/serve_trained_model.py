@@ -43,10 +43,10 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     print(f"   Training time: {checkpoint.get('training_time', 'N/A')}")
     
     # FIXED: Use the exact config from the saved checkpoint
-    actual_dim = config.get('dim', 2560)  # Default to larger model
-    actual_heads = config.get('n_heads', 40)
-    actual_N = config.get('N', 5)
-    actual_T = config.get('T', 10)
+    actual_dim = config.get('dim', 2048)  # Default to larger model
+    actual_heads = config.get('n_heads', 32)
+    actual_N = config.get('N', 4)
+    actual_T = config.get('T', 8)
     actual_vocab_size = config.get('vocab_size', len(tokenizer.vocab))
     
     print(f"🧠 Loading model with ACTUAL saved dimensions:")
@@ -204,4 +204,3 @@ if __name__ == "__main__":
     print("📚 API docs: http://localhost:8000/docs")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
