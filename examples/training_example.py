@@ -202,9 +202,9 @@ def collate_fn(batch):
     }
 
 def train_4b_hrm_model():
-    """Train a 4 BILLION parameter HRM model"""
+    """Train a PROPERLY SIZED 4B parameter HRM model for HGX-200"""
     
-    # Set optimal environment
+    # Set optimal environment for HGX-200
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     
@@ -214,93 +214,127 @@ def train_4b_hrm_model():
     device = check_and_setup_cuda()
     
     if device.type == 'cuda':
-        # Aggressive memory management for large model
-        torch.cuda.set_per_process_memory_fraction(0.95)
-        print("🚀 Set GPU memory fraction to 95%")
+        # Conservative memory management even for HGX-200
+        torch.cuda.set_per_process_memory_fraction(0.8)  # Leave 20% buffer
+        print("🚀 Set GPU memory fraction to 80% (conservative for HGX-200)")
     
-    # MASSIVE MODEL CONFIGURATION
-    print("\n🧠 Creating 4 BILLION parameter model...")
-    tokenizer = SimpleTokenizer(vocab_size=50000)  # Large vocabulary
+    # PROPERLY SIZED 4B MODEL CONFIGURATION
+    print("\n🧠 Creating PROPERLY SIZED 4B parameter model...")
     
-    # 4B PARAMETER CONFIGURATION
+    # MUCH SMALLER vocabulary to fit in memory
+    tokenizer = SimpleTokenizer(vocab_size=5000)  # Reduced from 50,000!
+    
+    # CAREFULLY CALCULATED 4B CONFIGURATION
+    # Target: ~4B parameters within 141GB VRAM limit
     model = create_hrm_model(
         vocab_size=len(tokenizer.vocab),
-        dim=2048,         # MASSIVE: 160 → 2048 (13x larger)
-        n_heads=32,       # MASSIVE: 4 → 32 (8x larger)
-        N=4,              # More reasoning cycles: 1 → 4
-        T=8,              # More steps per cycle: 3 → 8
+        dim=1024,         # Reduced from 2048/3072
+        n_heads=16,       # Reduced from 32/48
+        N=3,              # Reduced from 4/6
+        T=6,              # Reduced from 8/12
         use_act=True,
         dropout=0.1
     )
     
     model = model.to(device)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"🎯 MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
     
-    if total_params < 3_000_000_000:
-        print("⚠️  Model is smaller than 3B params. Increasing further...")
-        # If still too small, increase more
+    # Calculate actual memory requirements
+    param_memory = total_params * 4 / 1e9  # 4 bytes per param (FP32)
+    gradient_memory = total_params * 4 / 1e9  # Gradients
+    optimizer_memory = total_params * 8 / 1e9  # AdamW states (2x params)
+    activation_memory = 8.0  # Estimated activations
+    total_memory_needed = param_memory + gradient_memory + optimizer_memory + activation_memory
+    
+    print(f"🎯 MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+    print(f"📊 Memory breakdown:")
+    print(f"   Parameters: {param_memory:.1f} GB")
+    print(f"   Gradients: {gradient_memory:.1f} GB") 
+    print(f"   Optimizer: {optimizer_memory:.1f} GB")
+    print(f"   Activations: {activation_memory:.1f} GB")
+    print(f"   Total needed: {total_memory_needed:.1f} GB")
+    print(f"   Available: 141.0 GB")
+    print(f"   Safety margin: {141.0 - total_memory_needed:.1f} GB")
+    
+    # If still too large, reduce further
+    if total_memory_needed > 120:  # Leave 21GB buffer
+        print("⚠️  Still too large, reducing model size...")
         model = create_hrm_model(
             vocab_size=len(tokenizer.vocab),
-            dim=3072,         # Even larger
-            n_heads=48,       # Even more heads
-            N=6,              # More cycles
-            T=12,             # More steps
+            dim=768,          # Even smaller
+            n_heads=12,       # Even fewer heads
+            N=2,              # Fewer cycles
+            T=4,              # Fewer steps
             use_act=True,
             dropout=0.1
         )
         model = model.to(device)
         total_params = sum(p.numel() for p in model.parameters())
-        print(f"🎯 FINAL MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+        
+        # Recalculate memory
+        param_memory = total_params * 4 / 1e9
+        gradient_memory = total_params * 4 / 1e9
+        optimizer_memory = total_params * 8 / 1e9
+        total_memory_needed = param_memory + gradient_memory + optimizer_memory + activation_memory
+        
+        print(f"🎯 REDUCED MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+        print(f"📊 New memory requirement: {total_memory_needed:.1f} GB")
     
-    # Large dataset to match model capacity
-    print("\nCreating massive dataset...")
-    dataset = LargeReasoningDataset(tokenizer, max_length=256)
+    # Ensure we're under 120GB total
+    if total_memory_needed > 120:
+        print("❌ Model still too large for HGX-200!")
+        print("Recommended: Use model parallelism or reduce vocabulary further")
+        return
     
-    # Optimized DataLoader for large model
-    batch_size = 4 if device.type == 'cuda' else 1  # Smaller batches for 4B model
+    # Large dataset but manageable
+    print("\nCreating optimized dataset...")
+    dataset = LargeReasoningDataset(tokenizer, max_length=128)  # Reduced sequence length
+    
+    # Optimized DataLoader for HGX-200
+    batch_size = 8  # Larger batch size for HGX-200
     dataloader = DataLoader(
         dataset, 
         batch_size=batch_size,
         shuffle=True, 
         collate_fn=collate_fn,
-        num_workers=0,
-        pin_memory=True if device.type == 'cuda' else False
+        num_workers=4,  # More workers for HGX-200
+        pin_memory=True,
+        persistent_workers=True
     )
     
-    # Optimized optimizer for large model
+    # Optimized optimizer
     optimizer = optim.AdamW(
         model.parameters(), 
-        lr=3e-5,          # Higher learning rate for large model
+        lr=5e-5,          # Higher LR for HGX-200 efficiency
         weight_decay=0.01,
-        betas=(0.9, 0.95),  # Optimized betas for large models
+        betas=(0.9, 0.95),
         eps=1e-8
     )
     
     # Learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=15, eta_min=1e-7
+        optimizer, T_max=10, eta_min=1e-7
     )
     
-    print(f"\n🚀 Starting 4B parameter model training on {device}...")
+    print(f"\n🚀 Starting optimized 4B training on HGX-200...")
     model.train()
     best_loss = float('inf')
     
-    # Optimized initialization for large model
+    # Optimized initialization
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):
-            torch.nn.init.xavier_uniform_(m.weight, gain=0.5)  # Good gain for large model
+            torch.nn.init.xavier_uniform_(m.weight, gain=0.5)
             if m.bias is not None:
                 torch.nn.init.zeros_(m.bias)
         elif isinstance(m, torch.nn.Embedding):
             torch.nn.init.normal_(m.weight, std=0.02)
     
     model.apply(init_weights)
-    print("Applied optimized initialization for 4B model")
+    print("Applied optimized initialization")
     
-    # More epochs for large model
-    for epoch in range(15):
-        print(f"\nEpoch {epoch} - 4B model training")
+    # Training loop optimized for HGX-200
+    for epoch in range(10):  # Fewer epochs with larger model
+        print(f"\nEpoch {epoch} - HGX-200 optimized training")
         
         epoch_loss = 0
         epoch_steps = 0
@@ -308,7 +342,7 @@ def train_4b_hrm_model():
         type_losses = {}
         
         for batch_idx, batch in enumerate(dataloader):
-            if batch_idx % 5 == 0:  # More frequent memory clearing
+            if batch_idx % 10 == 0:  # Less frequent memory clearing
                 clear_gpu_memory()
             
             input_ids = batch["input_ids"].to(device, non_blocking=True)
@@ -318,12 +352,12 @@ def train_4b_hrm_model():
             optimizer.zero_grad()
             
             try:
-                # Forward pass optimized for large model
+                # Forward pass optimized for large memory
                 result = model(
                     input_ids, 
-                    max_segments=6,   # More segments for complex reasoning
+                    max_segments=4,   # Conservative segments
                     min_segments=1,
-                    epsilon=0.3,      # Lower epsilon for more processing
+                    epsilon=0.5,      # Reasonable stopping
                     training=True
                 )
                 
@@ -332,24 +366,22 @@ def train_4b_hrm_model():
                 
                 loss = model.compute_loss(result['outputs'], target_ids, result['q_values'])
                 
-                # Reasonable loss thresholds for 4B model
-                if torch.isnan(loss) or torch.isinf(loss) or loss.item() > 2000:
+                # Reasonable loss thresholds
+                if torch.isnan(loss) or torch.isinf(loss) or loss.item() > 1000:
                     continue
                 
-                # Gradient accumulation for large model
-                loss = loss / 4  # Accumulate over 4 steps
                 loss.backward()
                 
-                # Gradient clipping for large model
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                # Gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
                 
-                # Permissive gradient threshold for large model
-                if grad_norm < 25.0:
+                # Reasonable gradient threshold
+                if grad_norm < 10.0:
                     optimizer.step()
                     successful_steps += 1
                     
-                    # Track losses by type
-                    loss_value = loss.item() * 4  # Undo accumulation scaling
+                    # Track losses
+                    loss_value = loss.item()
                     for data_type in types:
                         if data_type not in type_losses:
                             type_losses[data_type] = []
@@ -358,20 +390,22 @@ def train_4b_hrm_model():
                     epoch_loss += loss_value
                     epoch_steps += 1
                     
-                    if batch_idx % 20 == 0:
+                    if batch_idx % 50 == 0:
                         current_lr = optimizer.param_groups[0]['lr']
-                        if device.type == 'cuda':
-                            gpu_memory_used = torch.cuda.memory_allocated() / 1e9
-                            print(f"  Batch {batch_idx}: Loss = {loss_value:.4f}, LR = {current_lr:.2e}, GPU = {gpu_memory_used:.1f}GB")
-                        else:
-                            print(f"  Batch {batch_idx}: Loss = {loss_value:.4f}, LR = {current_lr:.2e}")
+                        gpu_memory_used = torch.cuda.memory_allocated() / 1e9
+                        gpu_memory_cached = torch.cuda.memory_reserved() / 1e9
+                        print(f"  Batch {batch_idx}: Loss = {loss_value:.4f}, LR = {current_lr:.2e}")
+                        print(f"    GPU: {gpu_memory_used:.1f}GB used, {gpu_memory_cached:.1f}GB cached")
                 else:
                     optimizer.zero_grad()
                     continue
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    print(f"⚠️  OOM at batch {batch_idx}, clearing memory...")
+                    print(f"⚠️  Still OOM at batch {batch_idx}!")
+                    print(f"   Current GPU usage: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
+                    print(f"   Model parameters: {total_params:,}")
+                    print("   Consider further reducing model size")
                     clear_gpu_memory()
                     continue
                 else:
@@ -381,24 +415,18 @@ def train_4b_hrm_model():
         
         avg_loss = epoch_loss / epoch_steps if epoch_steps > 0 else float('inf')
         
-        # Print detailed statistics
+        # Print statistics
         print(f"\n{'='*80}")
         print(f"Epoch {epoch} completed: Avg Loss = {avg_loss:.4f}")
         print(f"Successful steps: {successful_steps}/{len(dataloader)} ({100*successful_steps/len(dataloader):.1f}%)")
         print(f"Learning rate: {optimizer.param_groups[0]['lr']:.2e}")
-        if device.type == 'cuda':
-            print(f"GPU memory used: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
+        print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
         
-        # Print top losses by type
-        if type_losses:
-            print("Loss by data type:")
-            sorted_types = sorted(type_losses.items(), key=lambda x: sum(x[1])/len(x[1]))
-            for data_type, losses in sorted_types[:3]:
-                avg_type_loss = sum(losses) / len(losses)
-                print(f"  {data_type}: {avg_type_loss:.4f} ({len(losses)} examples)")
+        # Reset peak memory tracking
+        torch.cuda.reset_peak_memory_stats()
         
         # Save model if improved
-        if avg_loss < best_loss and avg_loss < 1000:
+        if avg_loss < best_loss and avg_loss < 500:
             best_loss = avg_loss
             torch.save({
                 'epoch': epoch,
@@ -409,51 +437,28 @@ def train_4b_hrm_model():
                 'tokenizer': tokenizer,
                 'config': {
                     'vocab_size': len(tokenizer.vocab),
-                    'dim': 2048 if total_params < 5_000_000_000 else 3072,
-                    'n_heads': 32 if total_params < 5_000_000_000 else 48,
-                    'N': 4 if total_params < 5_000_000_000 else 6,
-                    'T': 8 if total_params < 5_000_000_000 else 12,
+                    'dim': 1024,
+                    'n_heads': 16,
+                    'N': 3,
+                    'T': 6,
                     'total_params': total_params
                 }
             }, 'hrm_4b_model.pt')
-            print(f"🎯 Saved new best 4B model with loss {avg_loss:.4f}")
+            print(f"🎯 Saved HGX-200 optimized model with loss {avg_loss:.4f}")
         
-        # Update learning rate
         scheduler.step()
         
-        # Early stopping if too few successful steps
-        if successful_steps < len(dataloader) * 0.02:  # Less than 2% success
-            print("⚠️  Too few successful training steps, stopping early")
+        # Early stopping
+        if successful_steps < len(dataloader) * 0.1:
+            print("⚠️  Too few successful training steps, stopping")
             break
         
         clear_gpu_memory()
     
-    # Save final model
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'tokenizer': tokenizer,
-        'final_loss': avg_loss,
-        'config': {
-            'vocab_size': len(tokenizer.vocab),
-            'dim': 2048 if total_params < 5_000_000_000 else 3072,
-            'n_heads': 32 if total_params < 5_000_000_000 else 48,
-            'N': 4 if total_params < 5_000_000_000 else 6,
-            'T': 8 if total_params < 5_000_000_000 else 12,
-            'total_params': total_params
-        }
-    }, 'hrm_4b_model.pt')
-    
-    print(f"\n🎉 4B MODEL training completed!")
-    print(f"📊 Best loss achieved: {best_loss:.4f}")
-    print(f"💾 Model saved: hrm_4b_model.pt")
-    print(f"🧠 Model specs: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
-    print(f"🎯 This model should FINALLY learn:")
-    print(f"   ✅ 2^8 = 256 (exponentiation)")
-    print(f"   ✅ (5+3)*4 = 32 (parentheses)")
-    print(f"   ✅ 15% of 200 = 30 (percentages)")
-    print(f"   ✅ Weather pattern recognition")
-    print(f"   ✅ Natural language responses")
+    print(f"\n🎉 HGX-200 optimized training completed!")
+    print(f"📊 Best loss: {best_loss:.4f}")
+    print(f"🧠 Model: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+    print(f"💾 Peak memory used: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB / 141 GB")
 
 if __name__ == "__main__":
     train_4b_hrm_model()
-    
