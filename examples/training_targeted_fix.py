@@ -212,7 +212,6 @@ def train_large_hrm_model():
         n_heads=8,        # 4x larger: 2 → 8  
         N=2,              # More reasoning cycles: 1 → 2
         T=6,              # More steps per cycle: 2 → 6
-        use_act=True,
         dropout=0.15      # Higher dropout for regularization
     )
     

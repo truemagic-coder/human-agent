@@ -128,7 +128,6 @@ model = create_hrm_model(
     dim=256,
     N=2,  # High-level cycles
     T=4,  # Low-level steps per cycle
-    use_act=True
 )
 
 # Train on your reasoning tasks...

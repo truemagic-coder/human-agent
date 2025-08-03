@@ -36,7 +36,6 @@ def load_4b_model(checkpoint_path: str = 'hrm_trained_model.pt'):
         n_heads=config.get('n_heads', 32),
         N=config.get('N', 4),
         T=config.get('T', 8),
-        use_act=True,
         dropout=0.1
     )
     

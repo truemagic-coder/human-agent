@@ -23,7 +23,6 @@ def load_trained_model(checkpoint_path: str = 'hrm_best_model.pt'):
         n_heads=4,
         N=2,
         T=4,
-        use_act=True,
         dropout=0.1
     )
     
@@ -115,7 +114,7 @@ if __name__ == "__main__":
             model = create_hrm_model(
                 vocab_size=len(tokenizer.vocab),
                 dim=256, n_heads=4, N=2, T=4,
-                use_act=True, dropout=0.1
+                dropout=0.1
             )
             model.load_state_dict(checkpoint['model_state_dict'])
             model.eval()

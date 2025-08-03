@@ -21,7 +21,6 @@ async def startup_event():
             'dim': 256,
             'N': 2,
             'T': 4,
-            'use_act': True
         },
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Change to "cuda" if you have GPU
     )
