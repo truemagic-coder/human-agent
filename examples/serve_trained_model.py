@@ -12,8 +12,8 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     print(f"Loading trained model from {checkpoint_path}...")
     
     # Add safe globals for tokenizer
-    from human_agent.core.tokenizer import SimpleTokenizer
-    torch.serialization.add_safe_globals([SimpleTokenizer])
+    from human_agent.core.tokenizer import Tokenizer
+    torch.serialization.add_safe_globals([Tokenizer])
     
     # Try to load the checkpoint
     try:
@@ -268,4 +268,3 @@ if __name__ == "__main__":
     print("🧪 Test endpoint: http://localhost:8000/test")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
