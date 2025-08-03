@@ -448,7 +448,10 @@ def train_10hour_hrm_model():
                 
                 try:
                     optimizer.step()
-                    successful_steps += 1
+                    # Only count as successful if loss is not a dummy value
+                    is_real_loss = loss_value not in [1.0, 5.0, 0.1, 1000.0, 999.0] and not torch.isnan(loss) and not torch.isinf(loss)
+                    if is_real_loss:
+                        successful_steps += 1
                     epoch_loss += loss_value
                     epoch_steps += 1
                     
@@ -464,7 +467,6 @@ def train_10hour_hrm_model():
                     
                 except Exception as optimizer_error:
                     print(f"⚠️ Optimizer step failed: {optimizer_error}")
-                    successful_steps += 1
                     epoch_loss += loss_value if 'loss_value' in locals() else 1.0
                     epoch_steps += 1
                     
@@ -482,7 +484,7 @@ def train_10hour_hrm_model():
                     dummy_loss = torch.tensor(0.1, requires_grad=True, device=device)
                     dummy_loss.backward()
                     optimizer.step()
-                    successful_steps += 1
+                    # Do NOT count dummy loss as successful
                     epoch_loss += 0.1
                     epoch_steps += 1
                     
@@ -495,7 +497,6 @@ def train_10hour_hrm_model():
                     })
                 except Exception as dummy_error:
                     print(f"⚠️ Dummy loss failed: {dummy_error}")
-                    successful_steps += 1
                     epoch_loss += 1.0
                     epoch_steps += 1
                 
