@@ -328,7 +328,16 @@ def train_10hour_hrm_model():
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}", 
                    ncols=100, leave=False)
         
-        for batch_idx, batch in enumerate(pbar):        
+        for batch_idx, batch in enumerate(pbar):
+            if epoch == 0 and batch_idx == 0:
+                print("DEBUG: Sample input_ids:", batch["input_ids"])
+                print("DEBUG: Sample target_ids:", batch["target_ids"])
+                print("DEBUG: Decoded input:", tokenizer.decode(batch["input_ids"][0].tolist()))
+                print("DEBUG: Decoded target:", tokenizer.decode(batch["target_ids"][0].tolist()))
+                print("DEBUG: input_ids device:", batch["input_ids"].device)
+                print("DEBUG: target_ids device:", batch["target_ids"].device)
+                print("DEBUG: Model device:", next(model.parameters()).device)
+
             # Check time budget
             if time.time() - start_time > MAX_TRAINING_TIME:
                 print("⏰ Time budget exhausted during epoch!")
@@ -380,6 +389,12 @@ def train_10hour_hrm_model():
                     continue
                 
                 outputs = result['outputs']
+
+                print("DEBUG: outputs shape:", outputs.shape)
+                print("DEBUG: target_ids shape:", target_ids.shape)
+                print("DEBUG: outputs sample:", outputs[0].detach().cpu().numpy())
+                print("DEBUG: target_ids sample:", target_ids[0].detach().cpu().numpy())
+
                 
                 # COMPUTE LOSS - ULTRA PERMISSIVE
                 try:
@@ -406,6 +421,7 @@ def train_10hour_hrm_model():
                     loss = torch.tensor(1.0, requires_grad=True, device=device)
                     
                 loss_value = loss.item()
+                print("DEBUG: loss_value:", loss_value)
                 if loss_value > 1000000:
                     print(f"⚠️ Loss value too high ({loss_value}), replacing with 1000.0")
                     loss = torch.tensor(1000.0, requires_grad=True, device=device)
