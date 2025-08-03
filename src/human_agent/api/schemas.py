@@ -3,7 +3,8 @@ from typing import List, Dict, Any, Optional, Union
 
 class Message(BaseModel):
     role: str
-    content: str
+    content: Optional[str] = None  # Changed to Optional to allow None for function calls
+    function_call: Optional[Dict[str, Any]] = None
 
 class Function(BaseModel):
     name: str
@@ -18,3 +19,36 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = 150
     temperature: Optional[float] = 0.7
     stream: Optional[bool] = False
+
+class Choice(BaseModel):
+    index: int
+    message: Message
+    finish_reason: str
+
+class Usage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[Choice]
+    usage: Optional[Usage] = None
+    function_result: Optional[Dict[str, Any]] = None
+
+class ErrorResponse(BaseModel):
+    error: Dict[str, Any]
+
+class FunctionCall(BaseModel):
+    name: str
+    arguments: str
+
+class FunctionMessage(Message):
+    name: Optional[str] = None
+
+class AssistantMessage(Message):
+    function_call: Optional[FunctionCall] = None
+    

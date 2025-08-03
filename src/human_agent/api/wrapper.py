@@ -21,6 +21,9 @@ class HRMChatWrapper:
         self.tokenizer = tokenizer
         self.function_registry = function_registry or FunctionRegistry()
         self.device = device
+        
+        # Move model to device
+        self.model = self.model.to(device)
         self.model.eval()
         
         # Register builtin functions if no registry provided
@@ -31,12 +34,25 @@ class HRMChatWrapper:
         """Format messages into a single string"""
         formatted = ""
         for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
+            # Handle both dict and Pydantic Message objects
+            if hasattr(msg, 'role'):
+                role = msg.role
+                content = msg.content
+                function_call = getattr(msg, 'function_call', None)
+            else:
+                role = msg.get("role")
+                content = msg.get("content")
+                function_call = msg.get("function_call")
+            
             # Handle function call messages
-            if role == "assistant" and "function_call" in msg:
-                func_call = msg["function_call"]
-                formatted += f"<assistant><function_call>{func_call['name']}({func_call['arguments']})</function_call></assistant>"
+            if role == "assistant" and function_call:
+                if hasattr(function_call, 'name'):
+                    func_name = function_call.name
+                    func_args = function_call.arguments
+                else:
+                    func_name = function_call['name']
+                    func_args = function_call['arguments']
+                formatted += f"<assistant><function_call>{func_name}({func_args})</function_call></assistant>"
             elif role == "function":
                 formatted += f"<function_result>{content}</function_result>"
             else:
@@ -116,7 +132,8 @@ class HRMChatWrapper:
         return args
     
     def _detect_function_intent(self, text: str) -> Optional[Dict[str, Any]]:
-        """Detect function intent from natural language"""        
+        """Detect function intent from natural language"""
+        
         # Math expressions
         math_patterns = [
             r'(\d+(?:\.\d+)?\s*[\+\-\*\/\^]\s*[\d\+\-\*\/\^\(\)\s\.]+)',
@@ -164,12 +181,33 @@ class HRMChatWrapper:
         """Generate response using HRM model"""
         stop_tokens = stop_tokens or ["</assistant>", "<user>", "<function_result>", "<system>"]
         
+        # Check for simple patterns that should have predefined responses
+        user_input = ""
+        if "<user>" in prompt:
+            user_input = prompt.split("<user>")[-1].split("</user>")[0].lower().strip()
+        
+        # Handle common greetings with predefined responses
+        greeting_responses = {
+            "hello": "Hello! How can I help you today?",
+            "hi": "Hi there! What can I do for you?",
+            "hey": "Hey! How can I assist you?",
+            "how are you": "I'm doing well, thank you! How are you?",
+            "good morning": "Good morning! How can I help you?",
+            "good afternoon": "Good afternoon! What can I do for you?",
+            "good evening": "Good evening! How may I assist you?",
+        }
+        
+        for greeting, response in greeting_responses.items():
+            if greeting in user_input:
+                return response
+        
         # For untrained models, limit the prompt to avoid repetition
         input_ids = self.tokenizer.encode(prompt[-500:])  # Take last 500 chars
         generated_ids = input_ids.copy()
         
         with torch.no_grad():
             for _ in range(max_tokens):
+                # Ensure tensor is on correct device
                 current_tensor = torch.tensor([generated_ids], device=self.device)
                 
                 # Limit sequence length to prevent memory issues
@@ -227,6 +265,10 @@ class HRMChatWrapper:
     ) -> Dict[str, Any]:
         """OpenAI-compatible chat completion"""
         
+        # Convert Pydantic objects to dicts for easier handling
+        if messages and hasattr(messages[0], 'role'):
+            messages = [{"role": msg.role, "content": msg.content} for msg in messages]
+        
         # Check if this is a function call continuation
         last_message = messages[-1] if messages else None
         if last_message and last_message.get("role") == "function":
@@ -254,7 +296,7 @@ class HRMChatWrapper:
                         "index": 0,
                         "message": {
                             "role": "assistant",
-                            "content": None,
+                            "content": "",  # Changed from None to empty string
                             "function_call": {
                                 "name": function_call_parsed["name"],
                                 "arguments": json.dumps(function_call_parsed["arguments"])
@@ -279,9 +321,21 @@ class HRMChatWrapper:
         # Clean up response
         response_text = response_text.replace("<assistant>", "").strip()
         
-        # If response is too short or looks like noise, provide a fallback
+        # If response is too short or looks like noise, provide a more helpful fallback
         if len(response_text) < 5 or response_text.count(" ") < 2:
-            response_text = "I'm still learning. Could you please rephrase your question?"
+            # Check what the user asked for better fallback
+            user_content = last_message.get("content", "").lower() if last_message else ""
+            
+            if any(word in user_content for word in ["hello", "hi", "hey"]):
+                response_text = "Hello! I'm an AI assistant. How can I help you today?"
+            elif "how are you" in user_content:
+                response_text = "I'm doing well, thank you for asking! How can I assist you?"
+            elif any(word in user_content for word in ["thank", "thanks"]):
+                response_text = "You're welcome! Is there anything else I can help you with?"
+            elif any(word in user_content for word in ["bye", "goodbye"]):
+                response_text = "Goodbye! Have a great day!"
+            else:
+                response_text = "I can help with calculations, weather information, and general questions. What would you like to know?"
         
         return {
             "id": f"chatcmpl-hrm-{abs(hash(str(messages))) % 10000}",
