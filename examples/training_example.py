@@ -303,11 +303,11 @@ def train_10hour_hrm_model():
             optimizer.zero_grad()
             
             try:
-                # More permissive forward pass for large model
+                # FIXED: Allow range for random sampling
                 result = model(
                     input_ids,
-                    max_segments=1,   # Start with single segment
-                    min_segments=1,
+                    max_segments=3,   # FIXED: Must be > min_segments
+                    min_segments=1,   # Keep at 1
                     epsilon=0.9,      # Very high epsilon for initial stability
                     training=True
                 )
