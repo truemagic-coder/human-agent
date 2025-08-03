@@ -331,6 +331,14 @@ def train_10hour_hrm_model():
         for batch_idx, batch in enumerate(pbar):
             batch_start_time = time.time()
             
+            # Debug: print a sample batch and device info
+            if epoch == 0 and batch_idx == 0:
+                print("DEBUG: Sample input_ids:", batch["input_ids"])
+                print("DEBUG: Sample target_ids:", batch["target_ids"])
+                print("DEBUG: input_ids device:", batch["input_ids"].device)
+                print("DEBUG: target_ids device:", batch["target_ids"].device)
+                print("DEBUG: Model device:", next(model.parameters()).device)
+            
             # Check time budget
             if time.time() - start_time > MAX_TRAINING_TIME:
                 print("⏰ Time budget exhausted during epoch!")
@@ -354,9 +362,9 @@ def train_10hour_hrm_model():
                     training=True
                 )
                 
-                # ULTRA PERMISSIVE: Accept ANY result
+                # Debug: print model result
                 if result is None:
-                    # Create a dummy loss to keep training going
+                    print("⚠️ Model returned None for this batch")
                     dummy_loss = torch.tensor(1.0, requires_grad=True, device=device)
                     try:
                         dummy_loss.backward()
@@ -368,9 +376,8 @@ def train_10hour_hrm_model():
                         pass
                     continue
                 
-                # Accept result even without outputs - create dummy loss
                 if 'outputs' not in result:
-                    # Create a dummy loss to keep training going
+                    print(f"⚠️ Model result missing 'outputs': {result}")
                     dummy_loss = torch.tensor(1.0, requires_grad=True, device=device)
                     try:
                         dummy_loss.backward()
@@ -384,43 +391,46 @@ def train_10hour_hrm_model():
                 
                 outputs = result['outputs']
                 
+                # Debug: print outputs and targets shapes and values
+                print("DEBUG: outputs shape:", outputs.shape)
+                print("DEBUG: target_ids shape:", target_ids.shape)
+                print("DEBUG: outputs sample:", outputs[0].detach().cpu().numpy())
+                print("DEBUG: target_ids sample:", target_ids[0].detach().cpu().numpy())
+                
                 # COMPUTE LOSS - ULTRA PERMISSIVE
                 try:
                     loss = model.compute_loss(outputs, target_ids, result.get('q_values'))
                 except Exception as loss_error:
-                    # If loss computation fails, create a simple cross entropy loss
                     try:
                         if len(outputs.shape) == 3:
                             batch_size, seq_len, vocab_size = outputs.shape
                             outputs_flat = outputs.view(-1, vocab_size)
                             targets_flat = target_ids.view(-1)
-                            # Simple cross entropy as fallback
                             loss = torch.nn.functional.cross_entropy(
                                 outputs_flat, targets_flat, ignore_index=tokenizer.pad_token_id
                             )
                         else:
-                            # Even simpler fallback - just a constant loss to keep training
                             loss = torch.tensor(5.0, requires_grad=True, device=device)
                     except Exception:
-                        # Last resort - tiny dummy loss
                         loss = torch.tensor(0.1, requires_grad=True, device=device)
                 
-                # ULTRA-PERMISSIVE LOSS CHECKING - Accept EVERYTHING
                 if torch.isnan(loss):
+                    print("⚠️ Loss is NaN, replacing with 1.0")
                     loss = torch.tensor(1.0, requires_grad=True, device=device)
                 if torch.isinf(loss):
+                    print("⚠️ Loss is Inf, replacing with 1.0")
                     loss = torch.tensor(1.0, requires_grad=True, device=device)
                     
                 loss_value = loss.item()
-                if loss_value > 1000000:  # EVEN MORE lenient: 100000 → 1000000
+                if loss_value > 1000000:
+                    print(f"⚠️ Loss value too high ({loss_value}), replacing with 1000.0")
                     loss = torch.tensor(1000.0, requires_grad=True, device=device)
                     loss_value = 1000.0
                 
-                # BACKWARD PASS - ALWAYS ATTEMPT
                 try:
                     loss.backward()
                 except Exception as backward_error:
-                    # If backward fails, create a simple loss and try again
+                    print(f"⚠️ Backward failed: {backward_error}")
                     optimizer.zero_grad()
                     try:
                         simple_loss = torch.tensor(1.0, requires_grad=True, device=device)
@@ -428,20 +438,17 @@ def train_10hour_hrm_model():
                     except Exception:
                         continue
                 
-                # ULTRA-PERMISSIVE GRADIENT HANDLING - Accept ANYTHING
                 try:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100000.0)  # Huge limit
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100000.0)
                 except Exception:
                     grad_norm = 0.0
                 
-                # ACCEPT LITERALLY ANY GRADIENT
                 try:
                     optimizer.step()
                     successful_steps += 1
                     epoch_loss += loss_value
                     epoch_steps += 1
                     
-                    # Update progress bar
                     success_rate = 100 * successful_steps / (batch_idx + 1)
                     
                     pbar.set_postfix({
@@ -453,7 +460,7 @@ def train_10hour_hrm_model():
                     })
                     
                 except Exception as optimizer_error:
-                    # Even if optimizer fails, count as success to keep going
+                    print(f"⚠️ Optimizer step failed: {optimizer_error}")
                     successful_steps += 1
                     epoch_loss += loss_value if 'loss_value' in locals() else 1.0
                     epoch_steps += 1
@@ -467,9 +474,8 @@ def train_10hour_hrm_model():
                     })
                 
             except Exception as e:
-                # ULTIMATE FALLBACK - Force a successful step
+                print(f"⚠️ Exception in training loop: {e}")
                 try:
-                    # Create a tiny dummy loss and force an update
                     dummy_loss = torch.tensor(0.1, requires_grad=True, device=device)
                     dummy_loss.backward()
                     optimizer.step()
@@ -484,19 +490,17 @@ def train_10hour_hrm_model():
                         'Steps': f'{successful_steps}',
                         'Status': 'Dummy'
                     })
-                except Exception:
-                    # Even dummy loss failed - just count it anyway
+                except Exception as dummy_error:
+                    print(f"⚠️ Dummy loss failed: {dummy_error}")
                     successful_steps += 1
                     epoch_loss += 1.0
                     epoch_steps += 1
                 
-                # Memory cleanup on any error
                 if "out of memory" in str(e):
                     clear_gpu_memory()
         
         pbar.close()
         
-        # Epoch summary
         epoch_time = time.time() - epoch_start_time
         avg_loss = epoch_loss / epoch_steps if epoch_steps > 0 else float('inf')
         success_rate = 100 * successful_steps / len(dataloader) if len(dataloader) > 0 else 0
@@ -509,8 +513,7 @@ def train_10hour_hrm_model():
         print(f"   Batches/sec: {len(dataloader)/epoch_time:.2f}")
         print(f"   GPU Memory: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
         
-        # MUCH MORE LENIENT SAVING
-        if epoch_steps > 0:  # As long as we had ANY steps
+        if epoch_steps > 0:
             if avg_loss < best_loss or best_loss == float('inf'):
                 best_loss = avg_loss
                 torch.save({
@@ -533,13 +536,12 @@ def train_10hour_hrm_model():
                 }, 'hrm_trained_model.pt')
                 print(f"🎯 Saved model! Loss: {avg_loss:.4f}, Success: {success_rate:.1f}%, Steps: {epoch_steps}")
         else:
-            # FORCE SAVE even with no successful steps
             print("🔧 No successful steps, but saving model anyway...")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': 999.0,  # Dummy loss
+                'loss': 999.0,
                 'tokenizer': tokenizer,
                 'config': {
                     'vocab_size': len(tokenizer.vocab),
@@ -555,25 +557,19 @@ def train_10hour_hrm_model():
             }, 'hrm_trained_model.pt')
             print(f"🎯 Force saved model anyway!")
         
-        # ALWAYS step scheduler regardless
         try:
             scheduler.step()
         except Exception:
             pass
         
-        # Never stop early - keep trying no matter what
         print(f"✅ Epoch completed with {successful_steps} steps, continuing...")
         
-        # Only step scheduler if we had successful steps
         if successful_steps > 0:
             scheduler.step()
         
-        # More lenient early stopping
-        if success_rate < 0.5:  # Even 0.5% is progress!
+        if success_rate < 0.5:
             print(f"⚠️  Success rate very low ({success_rate:.1f}%), but continuing...")
-            # Don't stop - keep trying
         
-        # Time check
         total_elapsed = time.time() - start_time
         if total_elapsed > MAX_TRAINING_TIME * 0.95:
             print("⏰ Approaching time limit, stopping training")
@@ -582,7 +578,6 @@ def train_10hour_hrm_model():
         torch.cuda.reset_peak_memory_stats()
         clear_gpu_memory()
     
-    # Final summary
     total_training_time = time.time() - start_time
     finish_time = datetime.datetime.now()
     
@@ -606,3 +601,4 @@ def train_10hour_hrm_model():
 
 if __name__ == "__main__":
     train_10hour_hrm_model()
+    
