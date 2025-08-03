@@ -179,7 +179,6 @@ class HierarchicalReasoningModel(nn.Module):
             Dictionary containing outputs and intermediate states
         """
         B, seq_len = x.shape
-        device = x.device
         
         # Input embedding
         x_embed = self.input_embedding(x)

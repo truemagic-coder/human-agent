@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException
-from typing import List, Dict, Any, Optional, Union
+from typing import Optional
+import torch
 import uvicorn
 from .api.wrapper import create_chat_model
-from .api.schemas import ChatCompletionRequest, Message, Function
+from .api.schemas import ChatCompletionRequest
 
 app = FastAPI(title="HRM OpenAI-Compatible API", version="1.0.0")
 
@@ -22,7 +23,7 @@ async def startup_event():
             'T': 4,
             'use_act': True
         },
-        device="cpu"  # Change to "cuda" if you have GPU
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Change to "cuda" if you have GPU
     )
     print("Model loaded successfully!")
 
