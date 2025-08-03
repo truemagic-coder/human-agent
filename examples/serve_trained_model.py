@@ -158,33 +158,6 @@ app = FastAPI(
     description=f"OpenAI-compatible API for {model_config['total_params']/1_000_000_000:.1f}B Parameter Hierarchical Reasoning Model"
 )
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
-    """OpenAI-compatible chat completions endpoint"""
-    
-    try:
-        result = chat_wrapper.chat_completion(
-            messages=request.messages,
-            functions=request.functions,
-            function_call=request.function_call,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            stream=request.stream
-        )
-        
-        return ChatCompletionResponse(**result)
-    
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {
-            "error": {
-                "message": str(e),
-                "type": "internal_error", 
-                "code": "model_error"
-            }
-        }
-
 @app.get("/")
 async def root():
     """Root endpoint with model information"""
@@ -255,6 +228,58 @@ async def health_check():
             "status": "❌ Model test failed",
             "error": str(e)
         }
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    """OpenAI-compatible chat completions endpoint"""
+    
+    try:
+        # Convert Pydantic messages to dict format
+        messages = []
+        for msg in request.messages:
+            msg_dict = {"role": msg.role, "content": msg.content}
+            if hasattr(msg, 'function_call') and msg.function_call:
+                msg_dict["function_call"] = msg.function_call
+            if hasattr(msg, 'name') and msg.name:
+                msg_dict["name"] = msg.name
+            messages.append(msg_dict)
+        
+        functions = None
+        if request.functions:
+            functions = [func.dict() for func in request.functions]
+        
+        result = chat_wrapper.chat_completion(
+            messages=messages,
+            functions=functions,
+            function_call=request.function_call,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            stream=request.stream
+        )
+        
+        # Return as plain dict instead of Pydantic model
+        return result
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "error": {
+                "message": str(e),
+                "type": "internal_error", 
+                "code": "model_error"
+            }
+        }
+
+@app.get("/v1/functions")
+async def list_functions():
+    """List available functions"""
+    try:
+        return {
+            "functions": chat_wrapper.function_registry.get_schemas()
+        }
+    except Exception as e:
+        return {"functions": [], "error": str(e)}
 
 if __name__ == "__main__":
     total_params = model_config['total_params']

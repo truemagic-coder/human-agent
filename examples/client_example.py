@@ -25,36 +25,57 @@ class HRMClient:
             "temperature": temperature
         }
         
-        response = self.session.post(f"{self.base_url}/v1/chat/completions", json=payload)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"❌ Error {response.status_code}: {response.text}")
-            return {"error": response.text}
+        try:
+            response = self.session.post(f"{self.base_url}/v1/chat/completions", json=payload)
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Handle both direct dict and Pydantic model responses
+                if isinstance(result, dict):
+                    return result
+                else:
+                    # Convert Pydantic model to dict if needed
+                    return result
+            else:
+                print(f"❌ Error {response.status_code}: {response.text}")
+                return {"error": response.text}
+                
+        except requests.exceptions.ConnectionError:
+            return {"error": "Could not connect to API server. Is it running?"}
+        except requests.exceptions.Timeout:
+            return {"error": "Request timed out"}
+        except Exception as e:
+            return {"error": f"Unexpected error: {str(e)}"}
     
     def get_functions(self) -> List[Dict[str, Any]]:
         """Get available functions"""
-        response = self.session.get(f"{self.base_url}/v1/functions")
-        if response.status_code == 200:
-            return response.json().get("functions", [])
-        return []
+        try:
+            response = self.session.get(f"{self.base_url}/v1/functions")
+            if response.status_code == 200:
+                return response.json().get("functions", [])
+            return []
+        except Exception:
+            return []
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information"""
-        response = self.session.get(f"{self.base_url}/model/info")
-        if response.status_code == 200:
-            return response.json()
-        return {}
+        try:
+            response = self.session.get(f"{self.base_url}/model/info")
+            if response.status_code == 200:
+                return response.json()
+            return {}
+        except Exception:
+            return {}
     
     def health_check(self) -> bool:
         """Check if the API is healthy"""
         try:
-            response = self.session.get(f"{self.base_url}/health", timeout=5)
+            response = self.session.get(f"{self.base_url}/health", timeout=10)
             return response.status_code == 200
         except Exception:
             return False
-
+        
 def test_basic_conversation():
     """Test basic conversation capabilities"""
     print("🗣️  Testing Basic Conversation")
