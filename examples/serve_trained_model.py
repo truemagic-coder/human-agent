@@ -7,9 +7,9 @@ from human_agent.functions.registry import FunctionRegistry
 from human_agent.functions.builtin import register_builtin_functions
 from human_agent.api.schemas import ChatCompletionRequest, ChatCompletionResponse
 
-def load_4b_model(checkpoint_path: str = 'hrm_trained_model.pt'):
-    """Load the 4B parameter HRM model"""
-    print(f"Loading 4B parameter model from {checkpoint_path}...")
+def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
+    """Load the trained HRM model with correct dimensions"""
+    print(f"Loading trained model from {checkpoint_path}...")
     
     # Add safe globals for tokenizer
     from human_agent.core.tokenizer import Tokenizer
@@ -19,41 +19,83 @@ def load_4b_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     try:
         checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     except FileNotFoundError:
-        # Try fallback to smaller model
-        try:
-            print("4B model not found, trying trained model...")
-            checkpoint = torch.load('hrm_trained_model.pt', map_location='cpu', weights_only=False)
-        except FileNotFoundError:
-            raise FileNotFoundError("No 4B or trained model found. Please run training first.")
+        # Try alternative names
+        alt_paths = ['hrm_10hour_model.pt', 'hrm_4b_model.pt', 'best_model.pt']
+        checkpoint = None
+        for alt_path in alt_paths:
+            try:
+                print(f"Trying {alt_path}...")
+                checkpoint = torch.load(alt_path, map_location='cpu', weights_only=False)
+                checkpoint_path = alt_path
+                break
+            except FileNotFoundError:
+                continue
+        
+        if checkpoint is None:
+            raise FileNotFoundError("No trained model found. Please run training first.")
     
     tokenizer = checkpoint['tokenizer']
     config = checkpoint.get('config', {})
     
-    print(f"Loading 4B model with config: {config}")
+    print(f"📊 Checkpoint info:")
+    print(f"   Config: {config}")
+    print(f"   Training loss: {checkpoint.get('loss', 'N/A')}")
+    print(f"   Training time: {checkpoint.get('training_time', 'N/A')}")
+    
+    # FIXED: Use the exact config from the saved checkpoint
+    actual_dim = config.get('dim', 2560)  # Default to larger model
+    actual_heads = config.get('n_heads', 40)
+    actual_N = config.get('N', 5)
+    actual_T = config.get('T', 10)
+    actual_vocab_size = config.get('vocab_size', len(tokenizer.vocab))
+    
+    print(f"🧠 Loading model with ACTUAL saved dimensions:")
+    print(f"   Vocab size: {actual_vocab_size}")
+    print(f"   Dimensions: {actual_dim}")
+    print(f"   Heads: {actual_heads}")
+    print(f"   N cycles: {actual_N}")
+    print(f"   T steps: {actual_T}")
+    
+    # Create model with EXACT same config as saved
     model = create_hrm_model(
-        vocab_size=config.get('vocab_size', len(tokenizer.vocab)),
-        dim=config.get('dim', 2048),
-        n_heads=config.get('n_heads', 32),
-        N=config.get('N', 4),
-        T=config.get('T', 8),
+        vocab_size=actual_vocab_size,
+        dim=actual_dim,        # Use saved dim
+        n_heads=actual_heads,  # Use saved heads
+        N=actual_N,            # Use saved N
+        T=actual_T,            # Use saved T
         dropout=0.1
     )
     
+    # Load the state dict
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"✅ 4B model loaded! Parameters: {total_params:,} ({total_params/1_000_000_000:.2f}B)")
-    if 'loss' in checkpoint:
-        print(f"   Training loss: {checkpoint['loss']:.4f}")
+    actual_size_b = total_params / 1_000_000_000
     
-    return model, tokenizer, config
+    print(f"✅ Model loaded successfully!")
+    print(f"   Parameters: {total_params:,} ({actual_size_b:.2f}B)")
+    print(f"   Architecture: {actual_dim}d, {actual_heads}h, N={actual_N}, T={actual_T}")
+    if 'loss' in checkpoint:
+        print(f"   Final training loss: {checkpoint['loss']:.4f}")
+    
+    # Return the actual config for display
+    actual_config = {
+        'vocab_size': actual_vocab_size,
+        'dim': actual_dim,
+        'n_heads': actual_heads,
+        'N': actual_N,
+        'T': actual_T,
+        'total_params': total_params
+    }
+    
+    return model, tokenizer, actual_config
 
-# Load the 4B model
+# Load the trained model
 try:
-    model, tokenizer, model_config = load_4b_model()
+    model, tokenizer, model_config = load_trained_model()
 except Exception as e:
-    print(f"❌ Error loading 4B model: {e}")
+    print(f"❌ Error loading model: {e}")
     exit(1)
 
 # Create function registry
@@ -73,14 +115,14 @@ chat_wrapper = HRMChatWrapper(
 
 # Create FastAPI app
 app = FastAPI(
-    title="4B Parameter HRM API", 
+    title="Trained HRM API", 
     version="2.0.0",
-    description="OpenAI-compatible API for 4 Billion Parameter Hierarchical Reasoning Model"
+    description=f"OpenAI-compatible API for {model_config['total_params']/1_000_000_000:.1f}B Parameter Hierarchical Reasoning Model"
 )
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
-    """OpenAI-compatible chat completions endpoint using 4B model"""
+    """OpenAI-compatible chat completions endpoint"""
     
     try:
         result = chat_wrapper.chat_completion(
@@ -105,35 +147,61 @@ async def chat_completions(request: ChatCompletionRequest):
 
 @app.get("/")
 async def root():
-    """Root endpoint with 4B model information"""
-    total_params = sum(p.numel() for p in model.parameters())
+    """Root endpoint with model information"""
+    total_params = model_config['total_params']
+    size_b = total_params / 1_000_000_000
     
     return {
-        "message": "🧠 4 BILLION Parameter HRM API Server",
-        "model": "hrm-4b",
+        "message": f"🧠 {size_b:.1f}B Parameter HRM API Server",
+        "model": f"hrm-{size_b:.1f}b",
         "status": "online",
         "model_info": {
-            "parameters": f"{total_params:,} ({total_params/1_000_000_000:.2f}B)",
-            "architecture": f"{model_config.get('dim', 2048)}d, {model_config.get('n_heads', 32)}h, N={model_config.get('N', 4)}, T={model_config.get('T', 8)}",
-            "reasoning_power": "MASSIVE - can handle complex mathematical patterns"
+            "parameters": f"{total_params:,} ({size_b:.2f}B)",
+            "architecture": f"{model_config['dim']}d, {model_config['n_heads']}h, N={model_config['N']}, T={model_config['T']}",
+            "vocab_size": model_config['vocab_size'],
+            "reasoning_power": "MASSIVE - trained on mathematical patterns" if size_b > 1 else "LARGE - trained on mathematical patterns"
         },
-        "enhanced_capabilities": [
+        "trained_capabilities": [
             "✅ Fixed exponentiation (2^8 = 256)",
             "✅ Complex parentheses ((5+3)*4 = 32)", 
             "✅ Percentage calculations (15% of 200 = 30)",
             "✅ Weather pattern recognition",
             "✅ Natural language responses",
             "✅ Multi-step reasoning",
-            "✅ 4B parameters for superior pattern learning"
+            f"✅ {size_b:.1f}B parameters for superior pattern learning"
         ]
     }
 
-if __name__ == "__main__":
-    total_params = sum(p.numel() for p in model.parameters())
+@app.get("/model/info")
+async def model_info():
+    """Detailed model information endpoint"""
+    total_params = model_config['total_params']
     
-    print("🚀 Starting 4 BILLION Parameter HRM API Server...")
-    print(f"🧠 Model: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+    return {
+        "model_config": model_config,
+        "size_comparison": {
+            "gpt2": "1.5B parameters",
+            "this_model": f"{total_params/1_000_000_000:.2f}B parameters",
+            "status": "LARGE SCALE" if total_params > 1_000_000_000 else "MEDIUM SCALE"
+        },
+        "architecture_details": {
+            "embedding_dim": model_config['dim'],
+            "attention_heads": model_config['n_heads'],
+            "reasoning_cycles": model_config['N'],
+            "steps_per_cycle": model_config['T'],
+            "vocabulary_size": model_config['vocab_size']
+        }
+    }
+
+if __name__ == "__main__":
+    total_params = model_config['total_params']
+    size_b = total_params / 1_000_000_000
+    
+    print(f"🚀 Starting {size_b:.1f}B Parameter HRM API Server...")
+    print(f"🧠 Model: {total_params:,} parameters ({size_b:.2f}B)")
+    print(f"📐 Architecture: {model_config['dim']}d, {model_config['n_heads']}h, N={model_config['N']}, T={model_config['T']}")
     print("📡 Server: http://localhost:8000")
+    print("📚 API docs: http://localhost:8000/docs")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
     
