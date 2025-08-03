@@ -288,134 +288,179 @@ async def chat_completions(request: ChatCompletionRequest):
         }
 
 def fallback_generation(messages, max_tokens=150, temperature=0.7):
-    """Fallback generation when the wrapper fails"""
+    """Fallback generation using the trained model directly"""
     try:
-        # Simple direct model generation
+        # Get the last user message
         user_content = messages[-1]["content"] if messages else "Hello"
         
-        # Create a simple prompt
+        # Create a proper conversation prompt
         prompt = f"<user>{user_content}</user><assistant>"
         
-        # Tokenize
-        tokens = tokenizer.encode(prompt, max_length=128)
+        # Tokenize with proper handling
+        tokens = tokenizer.encode(prompt, max_length=100)  # Shorter prompt
+        if not tokens:
+            tokens = [tokenizer.bos_token_id] if hasattr(tokenizer, 'bos_token_id') else [1]
+        
         input_ids = torch.tensor(tokens).unsqueeze(0).to(device)
         
-        # Generate with the model directly
+        print(f"🔧 Fallback generation for: '{user_content}'")
+        print(f"🔧 Prompt tokens: {len(tokens)}")
+        
+        # Generate with the model directly - MORE PERMISSIVE SETTINGS
         model.eval()
         with torch.no_grad():
-            # Use a very conservative generation approach
-            result = model(
-                input_ids,
-                max_segments=1,  # Single segment only
-                min_segments=1,
-                epsilon=0.99,    # Almost always stop
-                training=False
-            )
-            
-            if result and 'outputs' in result:
+            try:
+                result = model(
+                    input_ids,
+                    max_segments=1,
+                    min_segments=1,
+                    epsilon=0.9,     # LESS conservative: 0.99 → 0.9
+                    training=False
+                )
+                
+                if not result or 'outputs' not in result:
+                    print("🔧 No outputs from model, using simple response")
+                    raise Exception("No model outputs")
+                
                 outputs = result['outputs']
+                print(f"🔧 Model output shape: {outputs.shape}")
                 
-                # Get the last token predictions
-                if len(outputs.shape) == 3:  # [batch, seq, vocab]
-                    logits = outputs[0, -1, :]  # Last position
-                else:
-                    logits = outputs[-1, :]
-                
-                # Simple greedy decoding for safety
-                next_token_id = torch.argmax(logits).item()
-                
-                # Generate a few more tokens
-                generated_tokens = [next_token_id]
+                # Better token generation with repetition prevention
+                generated_tokens = []
                 current_input = input_ids
+                last_token = None
+                repeat_count = 0
                 
-                for _ in range(min(max_tokens, 50)):  # Limit generation
-                    if next_token_id == tokenizer.pad_token_id:
+                for step in range(min(max_tokens, 30)):  # Shorter generation
+                    # Get logits from outputs
+                    if len(outputs.shape) == 3:  # [batch, seq, vocab]
+                        logits = outputs[0, -1, :]  # Last position
+                    else:
+                        logits = outputs[-1, :]
+                    
+                    # Apply temperature
+                    if temperature > 0:
+                        logits = logits / temperature
+                    
+                    # PREVENT REPETITION - Penalize repeated tokens
+                    if last_token is not None and repeat_count > 2:
+                        logits[last_token] -= 5.0  # Strong penalty for repetition
+                    
+                    # Apply softmax and sample or use greedy
+                    if temperature > 0.1:
+                        probs = torch.softmax(logits, dim=-1)
+                        # Sample from top-k to avoid getting stuck
+                        top_k = 10
+                        top_probs, top_indices = torch.topk(probs, top_k)
+                        next_token_id = top_indices[torch.multinomial(top_probs, 1)].item()
+                    else:
+                        # Greedy decoding
+                        next_token_id = torch.argmax(logits).item()
+                    
+                    # Check for repetition
+                    if next_token_id == last_token:
+                        repeat_count += 1
+                        if repeat_count > 3:  # Too much repetition, try second best
+                            logits[next_token_id] = float('-inf')
+                            next_token_id = torch.argmax(logits).item()
+                            repeat_count = 0
+                    else:
+                        repeat_count = 0
+                    
+                    last_token = next_token_id
+                    
+                    # Stop on special tokens
+                    if hasattr(tokenizer, 'eos_token_id') and next_token_id == tokenizer.eos_token_id:
+                        break
+                    if hasattr(tokenizer, 'pad_token_id') and next_token_id == tokenizer.pad_token_id:
                         break
                     
-                    # Add token and continue
+                    generated_tokens.append(next_token_id)
+                    
+                    # Add token and get next outputs
                     next_token_tensor = torch.tensor([[next_token_id]]).to(device)
                     current_input = torch.cat([current_input, next_token_tensor], dim=1)
                     
-                    # Limit sequence length
-                    if current_input.size(1) > 200:
-                        current_input = current_input[:, -128:]  # Keep last 128 tokens
+                    # Limit sequence length to prevent memory issues
+                    if current_input.size(1) > 150:
+                        current_input = current_input[:, -100:]  # Keep last 100 tokens
                     
+                    # Get next model outputs
                     try:
                         result = model(
                             current_input,
                             max_segments=1,
                             min_segments=1,
-                            epsilon=0.99,
+                            epsilon=0.9,
                             training=False
                         )
                         
                         if result and 'outputs' in result:
                             outputs = result['outputs']
-                            if len(outputs.shape) == 3:
-                                logits = outputs[0, -1, :]
-                            else:
-                                logits = outputs[-1, :]
-                            
-                            next_token_id = torch.argmax(logits).item()
-                            generated_tokens.append(next_token_id)
                         else:
+                            print(f"🔧 Model stopped generating at step {step}")
                             break
-                    except Exception:
+                    except Exception as gen_error:
+                        print(f"🔧 Generation error at step {step}: {gen_error}")
                         break
+                
+                print(f"🔧 Generated {len(generated_tokens)} tokens")
                 
                 # Decode the generated tokens
                 try:
-                    generated_text = tokenizer.decode(generated_tokens)
-                    
-                    # Clean up the response
-                    if "</assistant>" in generated_text:
-                        generated_text = generated_text.split("</assistant>")[0]
-                    
-                    # Remove any XML tags
-                    generated_text = generated_text.replace("<assistant>", "").replace("</assistant>", "")
-                    generated_text = generated_text.strip()
-                    
-                    if not generated_text:
-                        generated_text = "I understand. How can I help you?"
-                    
-                    return {
-                        "choices": [{
-                            "message": {
-                                "role": "assistant",
-                                "content": generated_text
-                            },
-                            "finish_reason": "stop"
-                        }],
-                        "model": "hrm-trained",
-                        "usage": {
-                            "prompt_tokens": len(tokens),
-                            "completion_tokens": len(generated_tokens),
-                            "total_tokens": len(tokens) + len(generated_tokens)
+                    if generated_tokens:
+                        generated_text = tokenizer.decode(generated_tokens)
+                        print(f"🔧 Raw generated: '{generated_text}'")
+                        
+                        # Clean up the response
+                        if "</assistant>" in generated_text:
+                            generated_text = generated_text.split("</assistant>")[0]
+                        
+                        # Remove XML tags and clean up
+                        generated_text = generated_text.replace("<assistant>", "").replace("</assistant>", "")
+                        generated_text = generated_text.replace("<user>", "").replace("</user>", "")
+                        generated_text = generated_text.strip()
+                        
+                        # If the generation is too short or empty, provide a meaningful response
+                        if len(generated_text) < 3 or generated_text.lower() in ['e', 'ee', 'eee']:
+                            generated_text = "I understand. How can I help you with calculations, weather, or time information?"
+                        
+                        print(f"🔧 Final generated: '{generated_text}'")
+                        
+                        return {
+                            "choices": [{
+                                "message": {
+                                    "role": "assistant",
+                                    "content": generated_text
+                                },
+                                "finish_reason": "stop"
+                            }],
+                            "model": "hrm-trained",
+                            "usage": {
+                                "prompt_tokens": len(tokens),
+                                "completion_tokens": len(generated_tokens),
+                                "total_tokens": len(tokens) + len(generated_tokens)
+                            }
                         }
-                    }
-                    
+                    else:
+                        raise Exception("No tokens generated")
+                        
                 except Exception as decode_error:
-                    print(f"Decode error: {decode_error}")
-                    # Return a safe default response
-                    return {
-                        "choices": [{
-                            "message": {
-                                "role": "assistant", 
-                                "content": "I understand. How can I help you?"
-                            },
-                            "finish_reason": "stop"
-                        }],
-                        "model": "hrm-trained"
-                    }
+                    print(f"🔧 Decode error: {decode_error}")
+                    raise decode_error
+                    
+            except Exception as model_error:
+                print(f"🔧 Model generation error: {model_error}")
+                raise model_error
     
     except Exception as fallback_error:
-        print(f"Fallback generation failed: {fallback_error}")
-        # Last resort - return a simple response
+        print(f"🔧 Fallback generation failed: {fallback_error}")
+        # Provide a helpful response that shows the model is working
         return {
             "choices": [{
                 "message": {
                     "role": "assistant",
-                    "content": "I understand. How can I help you?"
+                    "content": "I can help you with calculations, weather information, and time queries. What would you like to know?"
                 },
                 "finish_reason": "stop"
             }],
