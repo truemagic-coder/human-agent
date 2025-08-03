@@ -7,7 +7,7 @@ from human_agent.functions.registry import FunctionRegistry
 from human_agent.functions.builtin import register_builtin_functions
 from human_agent.api.schemas import ChatCompletionRequest, ChatCompletionResponse
 
-def load_4b_model(checkpoint_path: str = 'hrm_4b_model.pt'):
+def load_4b_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     """Load the 4B parameter HRM model"""
     print(f"Loading 4B parameter model from {checkpoint_path}...")
     

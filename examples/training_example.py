@@ -400,7 +400,7 @@ def train_10hour_hrm_model():
                     'total_params': total_params
                 },
                 'training_time': time.time() - start_time
-            }, 'hrm_10hour_model.pt')
+            }, 'hrm_trained_model.pt')
             print(f"🎯 Saved best model! Loss: {avg_loss:.4f}, Success: {success_rate:.1f}%")
         
         # Only step scheduler if we had successful steps
@@ -445,4 +445,3 @@ def train_10hour_hrm_model():
 
 if __name__ == "__main__":
     train_10hour_hrm_model()
-    
