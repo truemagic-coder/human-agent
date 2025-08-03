@@ -233,9 +233,9 @@ async def model_info():
         }
     }
 
-@app.get("/test")
-async def test_model():
-    """Test endpoint to verify model works"""
+@app.get("/health")
+async def health_check():
+    """Health check endpoint to verify model works"""
     try:
         # Simple test
         test_result = chat_wrapper.chat_completion(
