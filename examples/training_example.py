@@ -336,11 +336,11 @@ def train_10hour_hrm_model():
                     optimizer.zero_grad()
                     continue
                 
-                # ULTRA-PERMISSIVE GRADIENT HANDLING
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1000.0)
+                # SLIGHTLY MORE PERMISSIVE - Now that basic training works
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)  # Tighter: 1000.0 → 5.0
                 
-                # ACCEPT ALMOST ANY GRADIENT
-                if grad_norm < 10000.0:  # 1000.0 → 10000.0 (accept nearly everything)
+                # MORE SELECTIVE GRADIENT ACCEPTANCE - Improve quality
+                if grad_norm < 20.0:  # Tighter: 10000.0 → 20.0 (still permissive but better quality)
                     optimizer.step()
                     successful_steps += 1
                     
@@ -354,7 +354,8 @@ def train_10hour_hrm_model():
                         'Loss': f'{loss_value:.2f}',
                         'Success': f'{success_rate:.1f}%',
                         'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
-                        'Steps': f'{successful_steps}'
+                        'Steps': f'{successful_steps}',
+                        'AvgLoss': f'{epoch_loss/epoch_steps:.2f}' if epoch_steps > 0 else 'inf'
                     })
                     
                 else:
@@ -445,4 +446,3 @@ def train_10hour_hrm_model():
 
 if __name__ == "__main__":
     train_10hour_hrm_model()
-    
