@@ -25,8 +25,8 @@ class GLU(nn.Module):
         x, gate = self.proj(x).chunk(2, dim=-1)
         return x * F.silu(gate)
 
-class TransformerBlock(nn.Module):
-    """Simplified Transformer block with modern improvements"""
+class SimpleTransformerBlock(nn.Module):
+    """Simplified Transformer block"""
     def __init__(self, dim: int, n_heads: int = 8, dropout: float = 0.1):
         super().__init__()
         self.dim = dim
@@ -34,35 +34,32 @@ class TransformerBlock(nn.Module):
         self.head_dim = dim // n_heads
         
         # Multi-head attention
-        self.q_proj = nn.Linear(dim, dim, bias=False)
-        self.k_proj = nn.Linear(dim, dim, bias=False)
-        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.qkv = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
         
-        # Feed-forward network with GLU
+        # Feed-forward
         self.ff = nn.Sequential(
-            GLU(dim),
-            nn.Linear(dim, dim, bias=False)
+            nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Linear(dim * 4, dim),
         )
         
-        # RMSNorm layers
-        self.norm1 = RMSNorm(dim)
-        self.norm2 = RMSNorm(dim)
+        # Layer norms
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
         
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask=None):
-        # Self-attention with residual connection
+        # Self-attention with residual
         residual = x
         x = self.norm1(x)
         
-        # Multi-head attention
         B, T, C = x.shape
-        q = self.q_proj(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        qkv = self.qkv(x).view(B, T, 3, self.n_heads, self.head_dim)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4)  # [3, B, nh, T, hd]
         
-        # Scaled dot-product attention
+        # Attention
         scale = 1.0 / math.sqrt(self.head_dim)
         attn = (q @ k.transpose(-2, -1)) * scale
         
@@ -78,7 +75,7 @@ class TransformerBlock(nn.Module):
         
         x = residual + out
         
-        # Feed-forward with residual connection
+        # Feed-forward with residual
         residual = x
         x = self.norm2(x)
         x = self.ff(x)
@@ -86,36 +83,37 @@ class TransformerBlock(nn.Module):
         
         return x
 
-class RecurrentModule(nn.Module):
-    """Base recurrent module for HRM"""
+class SimpleRecurrentModule(nn.Module):
+    """Simplified recurrent module for HRM"""
     def __init__(self, dim: int, n_heads: int = 8):
         super().__init__()
-        self.transformer = TransformerBlock(dim, n_heads)
+        self.transformer = SimpleTransformerBlock(dim, n_heads)
+        self.combine = nn.Linear(dim * 3, dim)  # Combine 3 inputs
         self.dim = dim
 
     def forward(self, hidden_state, *inputs):
-        """
-        Update hidden state based on inputs
-        Args:
-            hidden_state: Current hidden state [B, T, dim]
-            *inputs: Variable number of input tensors to combine
-        """
-        # Combine all inputs through element-wise addition
-        combined_input = hidden_state
+        """Update hidden state based on inputs"""
+        # Combine all inputs
+        all_inputs = [hidden_state]
         for inp in inputs:
             if inp is not None:
-                combined_input = combined_input + inp
+                all_inputs.append(inp)
         
-        # Apply transformer block
-        new_state = self.transformer(combined_input)
+        # Pad to 3 inputs if needed
+        while len(all_inputs) < 3:
+            all_inputs.append(torch.zeros_like(hidden_state))
+        
+        # Combine inputs
+        combined = torch.cat(all_inputs[:3], dim=-1)  # [B, T, 3*dim]
+        combined = self.combine(combined)  # [B, T, dim]
+        
+        # Apply transformer
+        new_state = self.transformer(combined)
         return new_state
 
-class HierarchicalReasoningModel(nn.Module):
+class SimpleHierarchicalReasoningModel(nn.Module):
     """
-    Hierarchical Reasoning Model (HRM) implementation
-    
-    Based on the paper: "Hierarchical Reasoning Model: Learning to Achieve Turing-Complete
-    Algorithmic Reasoning via Multi-Timescale Recurrent Dynamics"
+    Simplified HRM - keeps hierarchical reasoning but fixes training issues
     """
     def __init__(
         self,
@@ -123,9 +121,8 @@ class HierarchicalReasoningModel(nn.Module):
         dim: int = 512,
         n_heads: int = 8,
         max_seq_len: int = 1024,
-        N: int = 4,  # Number of high-level cycles
-        T: int = 8,  # Number of low-level steps per cycle
-        use_act: bool = True,  # Adaptive Computation Time
+        N: int = 2,  # REDUCED: 4 → 2 cycles
+        T: int = 4,  # REDUCED: 8 → 4 steps  
         dropout: float = 0.1
     ):
         super().__init__()
@@ -133,50 +130,50 @@ class HierarchicalReasoningModel(nn.Module):
         self.dim = dim
         self.N = N
         self.T = T
-        self.use_act = use_act
         self.max_seq_len = max_seq_len
         
         # Input embedding
         self.input_embedding = nn.Embedding(vocab_size, dim)
         self.pos_embedding = nn.Parameter(torch.randn(max_seq_len, dim) * 0.02)
         
-        # Recurrent modules
-        self.low_level_module = RecurrentModule(dim, n_heads)
-        self.high_level_module = RecurrentModule(dim, n_heads)
+        # Simplified recurrent modules
+        self.low_level_module = SimpleRecurrentModule(dim, n_heads)
+        self.high_level_module = SimpleRecurrentModule(dim, n_heads)
         
         # Output head
+        self.ln_f = nn.LayerNorm(dim)
         self.output_head = nn.Linear(dim, vocab_size, bias=False)
         
-        # Q-head for Adaptive Computation Time
-        if use_act:
-            self.q_head = nn.Linear(dim, 2, bias=False)  # [halt, continue]
+        # SIMPLIFIED: No ACT, no Q-heads
         
-        # Initialize hidden states
-        self.register_buffer('z_init_L', torch.randn(1, 1, dim) * 1.0)
-        self.register_buffer('z_init_H', torch.randn(1, 1, dim) * 1.0)
+        # Initialize hidden states  
+        self.register_buffer('z_init_L', torch.zeros(1, 1, dim))
+        self.register_buffer('z_init_H', torch.zeros(1, 1, dim))
         
         self.dropout = nn.Dropout(dropout)
+        
+        # Conservative initialization
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        """Conservative initialization"""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
         self, 
         x: torch.Tensor, 
-        max_segments: int = 4,
+        max_segments: int = 2,  # SIMPLIFIED: Only 1-2 segments
         min_segments: int = 1,
-        epsilon: float = 0.1,
+        epsilon: float = 0.8,   # High epsilon for stability
         training: bool = True
     ) -> Dict[str, Any]:
         """
-        Forward pass of HRM
-        
-        Args:
-            x: Input token sequence [B, seq_len]
-            max_segments: Maximum number of segments for ACT
-            min_segments: Minimum number of segments for ACT
-            epsilon: Exploration probability for ACT
-            training: Whether in training mode
-            
-        Returns:
-            Dictionary containing outputs and intermediate states
+        Simplified forward pass - no complex ACT logic
         """
         B, seq_len = x.shape
         
@@ -191,153 +188,65 @@ class HierarchicalReasoningModel(nn.Module):
         z_L = self.z_init_L.expand(B, seq_len, -1).contiguous()
         z_H = self.z_init_H.expand(B, seq_len, -1).contiguous()
         
-        outputs = []
-        q_values = []
-        segment_count = 0
+        # FIXED: Single reasoning segment with gradient flow
+        z_H, z_L, output = self._hrm_forward_pass(z_L, z_H, x_embed)
         
-        # Deep supervision loop
-        while segment_count < max_segments:
-            # Single forward pass of HRM
-            z_H_new, z_L_new, output = self._hrm_forward_pass(z_L, z_H, x_embed)
-            
-            outputs.append(output)
-            segment_count += 1
-            
-            # Adaptive Computation Time decision
-            if self.use_act and training:
-                q_vals = self.q_head(z_H_new.mean(dim=1))  # [B, 2]
-                q_values.append(q_vals)
-                
-                # Determine minimum segments stochastically
-                if torch.rand(1).item() < epsilon:
-                    current_min = torch.randint(2, max_segments + 1, (1,)).item()
-                else:
-                    current_min = min_segments
-                
-                # Halting decision
-                if segment_count >= current_min:
-                    halt_probs = torch.softmax(q_vals, dim=-1)
-                    should_halt = halt_probs[:, 0] > halt_probs[:, 1]
-                    if should_halt.all() or segment_count >= max_segments:
-                        break
-            elif not training and self.use_act:
-                # Simple greedy halting for inference
-                q_vals = self.q_head(z_H_new.mean(dim=1))
-                q_values.append(q_vals)
-                halt_probs = torch.softmax(q_vals, dim=-1)
-                if (halt_probs[:, 0] > halt_probs[:, 1]).all():
-                    break
-            else:
-                # Fixed number of segments
-                if segment_count >= max_segments:
-                    break
-            
-            # Detach states for next segment (1-step gradient approximation)
-            z_L = z_L_new.detach()
-            z_H = z_H_new.detach()
-        
+        # SIMPLIFIED: Return single output
         return {
-            'outputs': outputs,
-            'final_output': outputs[-1],
-            'q_values': q_values,
-            'num_segments': segment_count,
-            'final_states': (z_H_new, z_L_new)
+            'outputs': output,  # Single output, not list
+            'q_values': torch.ones(B, 1, device=x.device),  # Dummy q-values
+            'num_segments': 1,
+            'final_states': (z_H, z_L)
         }
 
     def _hrm_forward_pass(self, z_L, z_H, x_embed):
         """
-        Single forward pass of HRM with hierarchical convergence
-        
-        Args:
-            z_L: Low-level hidden state [B, seq_len, dim]
-            z_H: High-level hidden state [B, seq_len, dim] 
-            x_embed: Input embeddings [B, seq_len, dim]
-            
-        Returns:
-            Tuple of (new_z_H, new_z_L, output)
+        FIXED: Single forward pass with proper gradient flow
         """
-        # Hierarchical convergence: N cycles of T steps each
+        # Hierarchical reasoning: N cycles of T steps each
         for cycle in range(self.N):
-            # Low-level updates (T steps with fixed high-level state)
-            current_z_H = z_H  # Fixed during this cycle
-            
+            # Low-level updates (T steps with current high-level state)
             for step in range(self.T):
-                z_L = self.low_level_module(z_L, current_z_H, x_embed)
+                z_L = self.low_level_module(z_L, z_H, x_embed)
             
-            # High-level update (once per cycle)
-            z_H = self.high_level_module(z_H, z_L)
+            # High-level update (once per cycle, using updated low-level)
+            z_H = self.high_level_module(z_H, z_L, x_embed)
         
         # Generate output from final high-level state
+        z_H = self.ln_f(z_H)
         output = self.output_head(z_H)
         
         return z_H, z_L, output
 
     def compute_loss(self, outputs, targets, q_values=None):
         """
-        Compute loss with deep supervision and ACT
-        
-        Args:
-            outputs: List of output logits from each segment
-            targets: Target token sequence [B, seq_len]
-            q_values: List of Q-values for ACT (optional)
-            
-        Returns:
-            Total loss
+        SIMPLIFIED: Single cross-entropy loss
         """
-        total_loss = 0.0
+        # Single output - simple cross-entropy
+        if isinstance(outputs, list):
+            outputs = outputs[-1]  # Take final output
+            
+        loss = F.cross_entropy(
+            outputs.view(-1, self.vocab_size),
+            targets.view(-1),
+            ignore_index=-100,
+            reduction='mean'
+        )
         
-        # Deep supervision: loss at each segment
-        for i, output in enumerate(outputs):
-            seq_loss = F.cross_entropy(
-                output.view(-1, self.vocab_size),
-                targets.view(-1),
-                ignore_index=-100,
-                reduction='mean'
-            )
-            total_loss += seq_loss
-        
-        # ACT Q-learning loss
-        if q_values and len(q_values) > 0:
-            for i, q_vals in enumerate(q_values):
-                # Compute Q-learning targets
-                if i == len(outputs) - 1:  # Final segment
-                    # Reward based on prediction correctness
-                    predictions = outputs[i].argmax(dim=-1)
-                    correct = (predictions == targets).float().mean(dim=-1)
-                    target_halt = correct
-                    target_continue = torch.zeros_like(correct)
-                else:
-                    # Intermediate segments
-                    next_q = q_values[i + 1] if i + 1 < len(q_values) else q_vals
-                    target_halt = torch.zeros(q_vals.size(0), device=q_vals.device)
-                    target_continue = torch.max(next_q, dim=-1)[0]
-                
-                q_targets = torch.stack([target_halt, target_continue], dim=-1)
-                act_loss = F.mse_loss(q_vals, q_targets.detach())
-                total_loss += 0.1 * act_loss  # Weight the ACT loss
-        
-        return total_loss / len(outputs)
+        return loss
 
-def create_hrm_model(vocab_size: int, **kwargs) -> HierarchicalReasoningModel:
+def create_hrm_model(vocab_size: int, **kwargs) -> SimpleHierarchicalReasoningModel:
     """
-    Factory function to create an HRM model
-    
-    Args:
-        vocab_size: Size of vocabulary
-        **kwargs: Additional model parameters
-        
-    Returns:
-        HRM model instance
+    Factory function for simplified HRM
     """
     default_config = {
         'dim': 512,
         'n_heads': 8,
         'max_seq_len': 1024,
-        'N': 4,
-        'T': 8,
-        'use_act': True,
+        'N': 2,  # Reduced complexity
+        'T': 4,  # Reduced complexity
         'dropout': 0.1
     }
     
     config = {**default_config, **kwargs}
-    return HierarchicalReasoningModel(vocab_size, **config)
+    return SimpleHierarchicalReasoningModel(vocab_size, **config)
