@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 import re
 import random
+import gc
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 from human_agent.core.model import create_hrm_model
@@ -10,7 +11,7 @@ from human_agent.core.tokenizer import SimpleTokenizer
 class ComprehensiveReasoningDataset(Dataset):
     """Dataset for training reasoning and function calling using multiple sources"""
     
-    def __init__(self, tokenizer: SimpleTokenizer, max_length: int = 512, max_examples_per_type: int = 2000):
+    def __init__(self, tokenizer: SimpleTokenizer, max_length: int = 256, max_examples_per_type: int = 1000):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.examples = []
@@ -43,12 +44,12 @@ class ComprehensiveReasoningDataset(Dataset):
         """Prepare mathematical reasoning examples from multiple sources"""
         print("Loading mathematical reasoning datasets...")
         
-        # 1. GSM8K - Grade school math
+        # 1. GSM8K - Grade school math (reduced)
         try:
-            dataset = load_dataset("gsm8k", "main", split="train")
+            dataset = load_dataset("gsm8k", "main", split="train[:500]")  # Reduced from full dataset
             count = 0
             for item in dataset:
-                if count >= self.max_examples_per_type // 2:
+                if count >= self.max_examples_per_type // 3:
                     break
                     
                 question = item['question']
@@ -75,43 +76,7 @@ class ComprehensiveReasoningDataset(Dataset):
         except Exception as e:
             print(f"  Could not load GSM8K: {e}")
         
-        # 2. Competition Math
-        try:
-            dataset = load_dataset("competition_math", split="train")
-            count = 0
-            for item in dataset:
-                if count >= self.max_examples_per_type // 4:
-                    break
-                    
-                problem = item['problem']
-                solution = item['solution']
-                
-                # Look for numerical answers
-                answer_patterns = [
-                    r'\\boxed{(\d+)}',
-                    r'answer is (\d+)',
-                    r'= (\d+)$'
-                ]
-                
-                final_answer = None
-                for pattern in answer_patterns:
-                    match = re.search(pattern, solution)
-                    if match:
-                        final_answer = match.group(1)
-                        break
-                
-                if final_answer and len(problem) < 300:  # Keep problems reasonably short
-                    example = {
-                        "input": f"<user>{problem}</user>",
-                        "output": f"<assistant>Let me solve this step by step. The answer is {final_answer}.</assistant>",
-                        "type": "math_competition"
-                    }
-                    self.examples.append(example)
-                    count += 1
-            print(f"  Loaded {count} Competition Math examples")
-        except Exception as e:
-            print(f"  Could not load Competition Math: {e}")
-        
+        # Skip competition math to save memory
         # 3. Synthetic math examples
         self._add_synthetic_math_examples()
     
@@ -122,15 +87,13 @@ class ComprehensiveReasoningDataset(Dataset):
             ("Calculate {a} * {b}", "{a} * {b}", lambda a, b: a * b),
             ("What's {a} - {b}?", "{a} - {b}", lambda a, b: a - b),
             ("Compute {a} / {b}", "{a} / {b}", lambda a, b: round(a / b, 2)),
-            ("What is {a} squared?", "{a}^2", lambda a, b: a ** 2),
-            ("Find {a} percent of {b}", "{a}/100 * {b}", lambda a, b: round((a/100) * b, 2)),
         ]
         
         count = 0
-        for _ in range(self.max_examples_per_type // 4):
+        for _ in range(self.max_examples_per_type // 3):
             template = random.choice(math_templates)
-            a = random.randint(1, 100)
-            b = random.randint(1, 50) if "/ {b}" in template[1] else random.randint(1, 100)
+            a = random.randint(1, 50)  # Smaller numbers
+            b = random.randint(1, 20) if "/ {b}" in template[1] else random.randint(1, 50)
             
             try:
                 result = template[2](a, b)
@@ -152,24 +115,17 @@ class ComprehensiveReasoningDataset(Dataset):
         """Prepare function calling examples"""
         print("Loading function calling datasets...")
         
-        # Weather examples
+        # Weather examples (reduced)
         weather_templates = [
             "What's the weather in {city}?",
-            "How's the weather in {city} today?",
-            "Tell me about the weather in {city}",
-            "Weather forecast for {city}?",
-            "Is it raining in {city}?",
-            "Temperature in {city}?"
+            "How's the weather in {city}?",
+            "Weather in {city}?",
         ]
         
-        cities = [
-            "Tokyo", "London", "New York", "Paris", "Sydney", "Toronto", "Berlin", "Mumbai",
-            "Los Angeles", "Chicago", "Miami", "Seattle", "Boston", "San Francisco", "Denver",
-            "Rome", "Madrid", "Amsterdam", "Vienna", "Copenhagen", "Stockholm", "Helsinki"
-        ]
+        cities = ["Tokyo", "London", "New York", "Paris", "Sydney"]  # Fewer cities
         
         count = 0
-        for _ in range(300):
+        for _ in range(100):  # Reduced from 300
             city = random.choice(cities)
             question = random.choice(weather_templates).format(city=city)
             
@@ -181,21 +137,17 @@ class ComprehensiveReasoningDataset(Dataset):
             self.examples.append(example)
             count += 1
         
-        # Time examples
-        time_questions = [
-            "What time is it?", "Current time please", "Tell me the time",
-            "What's the current date and time?", "What day is today?",
-            "Current timestamp", "Show me the time", "Time right now?"
-        ]
+        # Time examples (reduced)
+        time_questions = ["What time is it?", "Current time?", "Tell me the time"]
         
-        for question in time_questions * 15:
+        for question in time_questions * 10:  # Reduced from 15
             example = {
                 "input": f"<user>{question}</user>",
                 "output": "<assistant><function_call>get_current_time()</function_call></assistant>",
                 "type": "function_time"
             }
             self.examples.append(example)
-            count += len(time_questions) * 15
+            count += len(time_questions) * 10
         
         print(f"  Generated {count} function calling examples")
     
@@ -203,42 +155,19 @@ class ComprehensiveReasoningDataset(Dataset):
         """Prepare code reasoning examples"""
         print("Loading code reasoning datasets...")
         
-        try:
-            # CodeAlpaca dataset
-            dataset = load_dataset("sahil2801/CodeAlpaca-20k", split="train")
-            count = 0
-            for item in dataset:
-                if count >= self.max_examples_per_type // 2:
-                    break
-                
-                instruction = item['instruction']
-                output = item['output']
-                
-                # Focus on shorter, cleaner examples
-                if len(instruction) < 200 and len(output) < 500 and 'def ' in output:
-                    example = {
-                        "input": f"<user>{instruction}</user>",
-                        "output": f"<assistant>{output}</assistant>",
-                        "type": "code_generation"
-                    }
-                    self.examples.append(example)
-                    count += 1
-            print(f"  Loaded {count} CodeAlpaca examples")
-        except Exception as e:
-            print(f"  Could not load CodeAlpaca: {e}")
-            self._add_synthetic_code_examples()
+        # Skip CodeAlpaca to save memory, use only synthetic
+        self._add_synthetic_code_examples()
     
     def _add_synthetic_code_examples(self):
         """Add synthetic code examples"""
         code_templates = [
             ("Write a function to add two numbers", "def add(a, b):\n    return a + b"),
-            ("Create a function to find the maximum of two numbers", "def max_num(a, b):\n    return a if a > b else b"),
-            ("Write a function to calculate factorial", "def factorial(n):\n    if n <= 1:\n        return 1\n    return n * factorial(n-1)"),
-            ("Create a function to check if a number is even", "def is_even(n):\n    return n % 2 == 0"),
+            ("Create a function to find max", "def max_num(a, b):\n    return a if a > b else b"),
+            ("Write a function for factorial", "def factorial(n):\n    if n <= 1:\n        return 1\n    return n * factorial(n-1)"),
         ]
         
         count = 0
-        for instruction, code in code_templates * 50:
+        for instruction, code in code_templates * 20:  # Reduced from 50
             example = {
                 "input": f"<user>{instruction}</user>",
                 "output": f"<assistant>{code}</assistant>",
@@ -252,48 +181,19 @@ class ComprehensiveReasoningDataset(Dataset):
         """Prepare instruction following examples"""
         print("Loading instruction following datasets...")
         
-        try:
-            # Alpaca dataset
-            dataset = load_dataset("tatsu-lab/alpaca", split="train")
-            count = 0
-            for item in dataset:
-                if count >= self.max_examples_per_type:
-                    break
-                
-                instruction = item['instruction']
-                input_text = item.get('input', '')
-                output = item['output']
-                
-                # Create prompt
-                if input_text:
-                    prompt = f"{instruction}\n\nInput: {input_text}"
-                else:
-                    prompt = instruction
-                
-                # Keep examples reasonably short
-                if len(prompt) < 300 and len(output) < 400:
-                    example = {
-                        "input": f"<user>{prompt}</user>",
-                        "output": f"<assistant>{output}</assistant>",
-                        "type": "instruction_following"
-                    }
-                    self.examples.append(example)
-                    count += 1
-            print(f"  Loaded {count} Alpaca examples")
-        except Exception as e:
-            print(f"  Could not load Alpaca: {e}")
-            self._add_synthetic_instruction_examples()
+        # Skip Alpaca to save memory, use only synthetic
+        self._add_synthetic_instruction_examples()
     
     def _add_synthetic_instruction_examples(self):
         """Add synthetic instruction examples"""
         instruction_pairs = [
-            ("Explain what artificial intelligence is", "Artificial intelligence (AI) is a branch of computer science that aims to create machines capable of performing tasks that typically require human intelligence."),
-            ("List three benefits of renewable energy", "1. Environmental protection by reducing greenhouse gas emissions\n2. Energy independence and security\n3. Long-term cost savings and job creation"),
-            ("Describe the water cycle", "The water cycle is the continuous movement of water through evaporation, condensation, precipitation, and collection processes on Earth."),
+            ("Explain AI", "AI is computer science that creates intelligent machines."),
+            ("List energy benefits", "1. Clean environment\n2. Energy independence\n3. Cost savings"),
+            ("Describe water cycle", "Water evaporates, condenses, precipitates, and collects continuously."),
         ]
         
         count = 0
-        for instruction, response in instruction_pairs * 100:
+        for instruction, response in instruction_pairs * 30:  # Reduced from 100
             example = {
                 "input": f"<user>{instruction}</user>",
                 "output": f"<assistant>{response}</assistant>",
@@ -308,18 +208,15 @@ class ComprehensiveReasoningDataset(Dataset):
         print("Loading conversation examples...")
         
         conversation_pairs = [
-            ("Hello!", "Hi there! How can I help you today?"),
-            ("How are you?", "I'm doing well, thank you for asking! How are you?"),
-            ("What can you do?", "I can help with math calculations, weather information, coding questions, and general inquiries."),
-            ("Thank you", "You're welcome! Is there anything else I can help you with?"),
-            ("Goodbye", "Goodbye! Have a great day!"),
-            ("Can you help me?", "Of course! I'd be happy to help. What do you need assistance with?"),
-            ("What's your name?", "I'm an AI assistant here to help answer your questions and assist with various tasks."),
-            ("How does this work?", "I can process your questions and provide helpful responses. Feel free to ask me anything!"),
+            ("Hello!", "Hi! How can I help?"),
+            ("How are you?", "I'm well, thanks! How are you?"),
+            ("What can you do?", "I help with math, weather, and questions."),
+            ("Thank you", "You're welcome!"),
+            ("Goodbye", "Goodbye!"),
         ]
         
         count = 0
-        for question, answer in conversation_pairs * 50:
+        for question, answer in conversation_pairs * 20:  # Reduced from 50
             example = {
                 "input": f"<user>{question}</user>",
                 "output": f"<assistant>{answer}</assistant>",
@@ -338,7 +235,7 @@ class ComprehensiveReasoningDataset(Dataset):
         # Combine input and output for training
         full_text = example["input"] + example["output"]
         
-        # Tokenize
+        # Tokenize with shorter max length
         tokens = self.tokenizer.encode(full_text, max_length=self.max_length)
         
         # Pad to max length
@@ -367,23 +264,40 @@ def collate_fn(batch):
         "types": types
     }
 
+def clear_gpu_memory():
+    """Clear GPU memory"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        gc.collect()
+
 def train_hrm_model():
     """Train the HRM model on comprehensive reasoning tasks"""
     
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Clear GPU memory first
+    clear_gpu_memory()
+    
+    # Set device with memory management
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        # Set memory allocation strategy
+        torch.cuda.set_per_process_memory_fraction(0.8)  # Use only 80% of GPU memory
+        print("Using CUDA device with memory fraction: 0.8")
+        print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    else:
+        device = torch.device("cpu")
+    
     print(f"Using device: {device}")
     
-    # Create tokenizer and model
-    vocab_size = 8000  # Increased for better coverage
+    # Create tokenizer and model with smaller dimensions
+    vocab_size = 5000  # Reduced vocab size
     tokenizer = SimpleTokenizer(vocab_size=vocab_size)
     
     model = create_hrm_model(
         vocab_size=len(tokenizer.vocab),
-        dim=512,
-        n_heads=8,
-        N=3,          # 3 high-level cycles for complex reasoning
-        T=6,          # 6 low-level steps per cycle
+        dim=256,          # Reduced from 512
+        n_heads=4,        # Reduced from 8
+        N=2,              # Reduced from 3
+        T=4,              # Reduced from 6
         use_act=True,
         dropout=0.1
     )
@@ -391,82 +305,99 @@ def train_hrm_model():
     model = model.to(device)
     print(f"Model has {sum(p.numel() for p in model.parameters()):,} parameters")
     
-    # Create dataset and dataloader
+    # Create dataset and dataloader with smaller batch size
     print("\nCreating dataset...")
-    dataset = ComprehensiveReasoningDataset(tokenizer, max_length=256, max_examples_per_type=1500)
+    dataset = ComprehensiveReasoningDataset(tokenizer, max_length=128, max_examples_per_type=500)  # Reduced sizes
     
     dataloader = DataLoader(
         dataset, 
-        batch_size=16,  # Increased batch size for better training
+        batch_size=4,     # Reduced from 16
         shuffle=True, 
         collate_fn=collate_fn,
-        num_workers=0
+        num_workers=0,
+        pin_memory=False  # Disable pin_memory to save GPU memory
     )
     
     # Optimizer and scheduler
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(dataloader) * 25)
+    optimizer = optim.AdamW(model.parameters(), lr=2e-4, weight_decay=0.01)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(dataloader) * 15)
     
-    # Training loop
+    # Training loop with memory management
     print("\nStarting training...")
     model.train()
     total_steps = 0
     best_loss = float('inf')
     
-    for epoch in range(25):  # 25 epochs for comprehensive training
+    for epoch in range(15):  # Reduced from 25
         epoch_loss = 0
         epoch_steps = 0
         type_losses = {}
         
         for batch_idx, batch in enumerate(dataloader):
-            input_ids = batch["input_ids"].to(device)
-            target_ids = batch["target_ids"].to(device)
+            # Clear memory periodically
+            if batch_idx % 50 == 0:
+                clear_gpu_memory()
+            
+            input_ids = batch["input_ids"].to(device, non_blocking=True)
+            target_ids = batch["target_ids"].to(device, non_blocking=True)
             types = batch["types"]
             
             optimizer.zero_grad()
             
-            # Forward pass with HRM
-            result = model(
-                input_ids, 
-                max_segments=4,
-                min_segments=1,
-                epsilon=0.1,
-                training=True
-            )
-            
-            # Compute loss with deep supervision
-            loss = model.compute_loss(result['outputs'], target_ids, result['q_values'])
-            
-            # Backward pass
-            loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-            optimizer.step()
-            scheduler.step()
-            
-            # Track losses by type
-            for data_type in types:
-                if data_type not in type_losses:
-                    type_losses[data_type] = []
-                type_losses[data_type].append(loss.item())
-            
-            epoch_loss += loss.item()
-            epoch_steps += 1
-            total_steps += 1
-            
-            if batch_idx % 100 == 0:
-                print(f"Epoch {epoch}, Batch {batch_idx}: Loss = {loss.item():.4f}, Segments = {result['num_segments']}, LR = {scheduler.get_last_lr()[0]:.6f}")
+            try:
+                # Forward pass with HRM
+                result = model(
+                    input_ids, 
+                    max_segments=2,   # Reduced from 4
+                    min_segments=1,
+                    epsilon=0.1,
+                    training=True
+                )
+                
+                # Compute loss with deep supervision
+                loss = model.compute_loss(result['outputs'], target_ids, result['q_values'])
+                
+                # Backward pass
+                loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # Reduced from 1.0
+                
+                optimizer.step()
+                scheduler.step()
+                
+                # Track losses by type
+                for data_type in types:
+                    if data_type not in type_losses:
+                        type_losses[data_type] = []
+                    type_losses[data_type].append(loss.item())
+                
+                epoch_loss += loss.item()
+                epoch_steps += 1
+                total_steps += 1
+                
+                if batch_idx % 50 == 0:
+                    print(f"Epoch {epoch}, Batch {batch_idx}: Loss = {loss.item():.4f}, Segments = {result['num_segments']}")
+                    if torch.cuda.is_available():
+                        print(f"  GPU Memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB / {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"OOM at batch {batch_idx}, skipping...")
+                    clear_gpu_memory()
+                    continue
+                else:
+                    raise e
         
-        avg_loss = epoch_loss / epoch_steps
+        avg_loss = epoch_loss / epoch_steps if epoch_steps > 0 else float('inf')
         
         # Print loss by type
         print(f"\nEpoch {epoch} completed: Avg Loss = {avg_loss:.4f}")
         print("Loss by type:")
         for data_type, losses in type_losses.items():
-            avg_type_loss = sum(losses) / len(losses)
-            print(f"  {data_type}: {avg_type_loss:.4f} ({len(losses)} batches)")
+            if losses:
+                avg_type_loss = sum(losses) / len(losses)
+                print(f"  {data_type}: {avg_type_loss:.4f} ({len(losses)} batches)")
         
         # Save best model
         if avg_loss < best_loss:
@@ -490,6 +421,9 @@ def train_hrm_model():
                 'tokenizer': tokenizer,
             }, f'hrm_checkpoint_epoch_{epoch+1}.pt')
             print(f"Saved checkpoint: hrm_checkpoint_epoch_{epoch+1}.pt")
+        
+        # Clear memory after each epoch
+        clear_gpu_memory()
     
     # Save final model
     torch.save({
@@ -501,6 +435,10 @@ def train_hrm_model():
     print(f"Best loss achieved: {best_loss:.4f}")
 
 if __name__ == "__main__":
+    # Set environment variable for better memory management
+    import os
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    
     # Install required packages if not already installed
     try:
         import datasets
@@ -510,3 +448,4 @@ if __name__ == "__main__":
         subprocess.check_call(["pip", "install", "datasets", "transformers"])
     
     train_hrm_model()
+    
