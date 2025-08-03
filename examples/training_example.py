@@ -298,70 +298,155 @@ def train_10hour_hrm_model():
             
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             target_ids = batch["target_ids"].to(device, non_blocking=True)
-            types = batch["types"]
             
             optimizer.zero_grad()
             
+        try:
+            # ULTRA-AGGRESSIVE DEBUGGING: Start with minimal complexity
+            result = model(
+                input_ids,
+                max_segments=2,   # MINIMAL: Just 1-2 segments
+                min_segments=1,   
+                epsilon=0.95,     # ULTRA HIGH: Stop almost immediately
+                training=True
+            )
+            
+            # DETAILED DEBUGGING
+            if result is None:
+                print(f"\n🔍 DEBUG: result is None at batch {batch_idx}")
+                continue
+                
+            if 'outputs' not in result:
+                print(f"\n🔍 DEBUG: No 'outputs' in result at batch {batch_idx}")
+                print(f"   Result keys: {list(result.keys()) if result else 'None'}")
+                continue
+                
+            if 'q_values' not in result:
+                print(f"\n🔍 DEBUG: No 'q_values' in result at batch {batch_idx}")
+                print(f"   Result keys: {list(result.keys())}")
+                continue
+            
+            # CHECK OUTPUT SHAPES
+            outputs = result['outputs']
+            q_values = result['q_values']
+            
+            if batch_idx == 0:  # Debug first batch only
+                print(f"\n🔍 DEBUG - First batch analysis:")
+                print(f"   Input shape: {input_ids.shape}")
+                print(f"   Target shape: {target_ids.shape}")
+                print(f"   Output shape: {outputs.shape if outputs is not None else 'None'}")
+                print(f"   Q-values shape: {q_values.shape if q_values is not None else 'None'}")
+                print(f"   Output dtype: {outputs.dtype if outputs is not None else 'None'}")
+                print(f"   Target dtype: {target_ids.dtype}")
+            
+            # COMPUTE LOSS WITH DEBUGGING
             try:
-                # FIXED: Allow range for random sampling
-                result = model(
-                    input_ids,
-                    max_segments=3,   # FIXED: Must be > min_segments
-                    min_segments=1,   # Keep at 1
-                    epsilon=0.9,      # Very high epsilon for initial stability
-                    training=True
-                )
+                loss = model.compute_loss(outputs, target_ids, q_values)
                 
-                if result is None or 'outputs' not in result or 'q_values' not in result:
-                    continue
+                if batch_idx == 0:
+                    print(f"   Loss value: {loss.item()}")
+                    print(f"   Loss dtype: {loss.dtype}")
+                    print(f"   Loss requires_grad: {loss.requires_grad}")
                 
-                loss = model.compute_loss(result['outputs'], target_ids, result['q_values'])
+            except Exception as loss_error:
+                print(f"\n❌ LOSS COMPUTATION ERROR at batch {batch_idx}: {loss_error}")
+                continue
+            
+            # ULTRA-LENIENT LOSS CHECKING
+            if torch.isnan(loss):
+                print(f"\n⚠️  NaN loss at batch {batch_idx}")
+                continue
                 
-                # MUCH more lenient loss checking
-                if torch.isnan(loss) or torch.isinf(loss) or loss.item() > 10000:
-                    continue
+            if torch.isinf(loss):
+                print(f"\n⚠️  Inf loss at batch {batch_idx}")
+                continue
                 
-                # No gradient accumulation for simplicity
+            loss_value = loss.item()
+            if loss_value > 50000:  # Even more lenient: 10000 → 50000
+                print(f"\n⚠️  Very high loss at batch {batch_idx}: {loss_value}")
+                continue
+            
+            # BACKWARD PASS WITH DEBUGGING
+            try:
                 loss.backward()
                 
-                # More permissive gradient clipping
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                
-                # VERY permissive gradient threshold
-                if grad_norm < 50.0:  # Much higher threshold: 15.0 → 50.0
-                    optimizer.step()
-                    successful_steps += 1
+                if batch_idx == 0:
+                    print(f"   Backward pass successful")
                     
-                    loss_value = loss.item()
-                    epoch_loss += loss_value
-                    epoch_steps += 1
-                    
-                    # Update progress bar
-                    batch_time = time.time() - batch_start_time
-                    success_rate = 100 * successful_steps / (batch_idx + 1)
-                    
-                    pbar.set_postfix({
-                        'Loss': f'{loss_value:.1f}',
-                        'Success': f'{success_rate:.1f}%',
-                        'Time': f'{batch_time:.2f}s',
-                        'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
-                        'GradNorm': f'{grad_norm:.1f}'
-                    })
-                else:
-                    optimizer.zero_grad()
-                    continue
-                
-            except RuntimeError as e:
-                if "out of memory" in str(e):
-                    print(f"\n⚠️  OOM at batch {batch_idx}! Current GPU: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
-                    clear_gpu_memory()
-                    continue
-                else:
-                    print(f"\n⚠️  Runtime error: {str(e)[:100]}")
-                    continue
-            except Exception as e:
-                print(f"\n⚠️  Other error: {str(e)[:100]}")
+            except Exception as backward_error:
+                print(f"\n❌ BACKWARD PASS ERROR at batch {batch_idx}: {backward_error}")
+                optimizer.zero_grad()
                 continue
+            
+            # GRADIENT ANALYSIS
+            total_grad_norm = 0
+            param_count = 0
+            nan_grad_count = 0
+            
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    param_grad_norm = param.grad.norm().item()
+                    total_grad_norm += param_grad_norm ** 2
+                    param_count += 1
+                    
+                    if torch.isnan(param.grad).any():
+                        nan_grad_count += 1
+                        if batch_idx == 0:
+                            print(f"   NaN gradient in {name}")
+                elif batch_idx == 0:
+                    print(f"   No gradient for {name}")
+            
+            total_grad_norm = total_grad_norm ** 0.5
+            
+            if batch_idx == 0:
+                print(f"   Total grad norm: {total_grad_norm}")
+                print(f"   Params with gradients: {param_count}")
+                print(f"   Params with NaN gradients: {nan_grad_count}")
+            
+            # ULTRA-PERMISSIVE GRADIENT CLIPPING
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)  # 5.0 → 100.0
+            
+            # ULTRA-PERMISSIVE GRADIENT THRESHOLD
+            if grad_norm < 1000.0:  # 50.0 → 1000.0 (almost always accept)
+                optimizer.step()
+                successful_steps += 1
+                
+                epoch_loss += loss_value
+                epoch_steps += 1
+                
+                # Update progress bar
+                batch_time = time.time() - batch_start_time
+                success_rate = 100 * successful_steps / (batch_idx + 1)
+                
+                pbar.set_postfix({
+                    'Loss': f'{loss_value:.1f}',
+                    'Success': f'{success_rate:.1f}%',
+                    'Time': f'{batch_time:.2f}s',
+                    'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
+                    'GradNorm': f'{grad_norm:.1f}'
+                })
+                
+                if batch_idx == 0:
+                    print(f"   ✅ FIRST SUCCESSFUL STEP! Loss: {loss_value:.4f}")
+                    
+            else:
+                if batch_idx == 0:
+                    print(f"   ❌ Gradient norm too high: {grad_norm}")
+                optimizer.zero_grad()
+                continue
+            
+        except RuntimeError as e:
+            error_msg = str(e)
+            if "out of memory" in error_msg:
+                print(f"\n⚠️  OOM at batch {batch_idx}! Current GPU: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
+                clear_gpu_memory()
+                continue
+            else:
+                print(f"\n⚠️  Runtime error at batch {batch_idx}: {error_msg[:200]}")
+                continue
+        except Exception as e:
+            print(f"\n⚠️  Other error at batch {batch_idx}: {str(e)[:200]}")
+            continue
         
         pbar.close()
         
