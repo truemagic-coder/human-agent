@@ -395,6 +395,9 @@ def train_10hour_hrm_model():
                 print("DEBUG: outputs sample:", outputs[0].detach().cpu().numpy())
                 print("DEBUG: target_ids sample:", target_ids[0].detach().cpu().numpy())
 
+                print("DEBUG: Decoded target:", tokenizer.decode(target_ids[0].tolist()))
+                print("DEBUG: Decoded output argmax:", tokenizer.decode(outputs[0].argmax(-1).tolist()))
+
                 
                 # COMPUTE LOSS - ULTRA PERMISSIVE
                 try:
