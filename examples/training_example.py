@@ -162,7 +162,6 @@ def train_10hour_hrm_model():
         n_heads=32,       # MUCH more heads: 24 → 32
         N=4,              # More cycles: 3 → 4
         T=8,              # More steps: 6 → 8
-        use_act=True,
         dropout=0.1
     )
     
@@ -180,7 +179,6 @@ def train_10hour_hrm_model():
             n_heads=40,       # Even more heads
             N=5,              # Even more cycles
             T=10,             # Even more steps
-            use_act=True,
             dropout=0.1
         )
         model = model.to(device)
