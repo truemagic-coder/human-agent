@@ -8,7 +8,7 @@ import datetime
 from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset
 from human_agent.core.model import create_hrm_model
-from human_agent.core.tokenizer import SimpleTokenizer
+from human_agent.core.tokenizer import Tokenizer
 
 def clear_gpu_memory():
     """Aggressively clear GPU memory"""
@@ -20,7 +20,7 @@ def clear_gpu_memory():
 class OptimizedReasoningDataset(Dataset):
     """Optimized dataset for 10-hour training budget"""
     
-    def __init__(self, tokenizer: SimpleTokenizer, max_length: int = 128):
+    def __init__(self, tokenizer: Tokenizer, max_length: int = 128):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.examples = []
@@ -153,7 +153,7 @@ def train_10hour_hrm_model():
     # MUCH LARGER MODEL TO REACH 1-2B PARAMETERS
     print("\n🧠 Creating LARGE model for 10-hour training...")
     
-    tokenizer = SimpleTokenizer(vocab_size=16000)  # Larger vocab
+    tokenizer = Tokenizer(vocab_size=16000)  # Larger vocab
     
     # CALCULATE FOR 1-2B PARAMETERS
     model = create_hrm_model(

@@ -12,8 +12,8 @@ def load_4b_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     print(f"Loading 4B parameter model from {checkpoint_path}...")
     
     # Add safe globals for tokenizer
-    from human_agent.core.tokenizer import SimpleTokenizer
-    torch.serialization.add_safe_globals([SimpleTokenizer])
+    from human_agent.core.tokenizer import Tokenizer
+    torch.serialization.add_safe_globals([Tokenizer])
     
     # Try to load the checkpoint
     try:

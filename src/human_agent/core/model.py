@@ -25,7 +25,7 @@ class GLU(nn.Module):
         x, gate = self.proj(x).chunk(2, dim=-1)
         return x * F.silu(gate)
 
-class SimpleTransformerBlock(nn.Module):
+class TransformerBlock(nn.Module):
     """Simplified Transformer block"""
     def __init__(self, dim: int, n_heads: int = 8, dropout: float = 0.1):
         super().__init__()
@@ -83,11 +83,11 @@ class SimpleTransformerBlock(nn.Module):
         
         return x
 
-class SimpleRecurrentModule(nn.Module):
+class RecurrentModule(nn.Module):
     """Simplified recurrent module for HRM"""
     def __init__(self, dim: int, n_heads: int = 8):
         super().__init__()
-        self.transformer = SimpleTransformerBlock(dim, n_heads)
+        self.transformer = TransformerBlock(dim, n_heads)
         self.combine = nn.Linear(dim * 3, dim)  # Combine 3 inputs
         self.dim = dim
 
@@ -111,7 +111,7 @@ class SimpleRecurrentModule(nn.Module):
         new_state = self.transformer(combined)
         return new_state
 
-class SimpleHierarchicalReasoningModel(nn.Module):
+class HierarchicalReasoningModel(nn.Module):
     """
     Simplified HRM - keeps hierarchical reasoning but fixes training issues
     """
@@ -137,8 +137,8 @@ class SimpleHierarchicalReasoningModel(nn.Module):
         self.pos_embedding = nn.Parameter(torch.randn(max_seq_len, dim) * 0.02)
         
         # Simplified recurrent modules
-        self.low_level_module = SimpleRecurrentModule(dim, n_heads)
-        self.high_level_module = SimpleRecurrentModule(dim, n_heads)
+        self.low_level_module = RecurrentModule(dim, n_heads)
+        self.high_level_module = RecurrentModule(dim, n_heads)
         
         # Output head
         self.ln_f = nn.LayerNorm(dim)
@@ -235,7 +235,7 @@ class SimpleHierarchicalReasoningModel(nn.Module):
         
         return loss
 
-def create_hrm_model(vocab_size: int, **kwargs) -> SimpleHierarchicalReasoningModel:
+def create_hrm_model(vocab_size: int, **kwargs) -> HierarchicalReasoningModel:
     """
     Factory function for simplified HRM
     """
@@ -249,4 +249,4 @@ def create_hrm_model(vocab_size: int, **kwargs) -> SimpleHierarchicalReasoningMo
     }
     
     config = {**default_config, **kwargs}
-    return SimpleHierarchicalReasoningModel(vocab_size, **config)
+    return HierarchicalReasoningModel(vocab_size, **config)

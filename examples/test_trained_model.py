@@ -1,6 +1,6 @@
 import torch
 from human_agent.core.model import create_hrm_model
-from human_agent.core.tokenizer import SimpleTokenizer
+from human_agent.core.tokenizer import Tokenizer
 from human_agent.api.wrapper import HRMChatWrapper
 from human_agent.functions.registry import FunctionRegistry
 from human_agent.functions.builtin import register_builtin_functions
@@ -10,7 +10,7 @@ def load_trained_model(checkpoint_path: str = 'hrm_best_model.pt'):
     print(f"Loading model from {checkpoint_path}...")
     
     # Add safe globals for tokenizer
-    torch.serialization.add_safe_globals([SimpleTokenizer])
+    torch.serialization.add_safe_globals([Tokenizer])
     
     # Load checkpoint with weights_only=False for custom objects
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
@@ -108,7 +108,7 @@ if __name__ == "__main__":
         print("Found final model: hrm_final_model.pt")
         # Modify function for final model
         def load_trained_model(checkpoint_path: str = 'hrm_final_model.pt'):
-            torch.serialization.add_safe_globals([SimpleTokenizer])
+            torch.serialization.add_safe_globals([Tokenizer])
             checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
             tokenizer = checkpoint['tokenizer']
             
@@ -124,4 +124,3 @@ if __name__ == "__main__":
         test_model_capabilities()
     else:
         print("No trained model found. Please run training first.")
-        

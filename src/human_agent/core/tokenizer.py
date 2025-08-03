@@ -1,7 +1,7 @@
 import re
 from typing import List, Optional
 
-class SimpleTokenizer:
+class Tokenizer:
     """Simple tokenizer for HRM model"""
     
     def __init__(self, vocab_size: int = 50000):

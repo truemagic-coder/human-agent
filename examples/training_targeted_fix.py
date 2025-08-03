@@ -4,7 +4,7 @@ import random
 import gc
 from torch.utils.data import DataLoader, Dataset
 from human_agent.core.model import create_hrm_model
-from human_agent.core.tokenizer import SimpleTokenizer
+from human_agent.core.tokenizer import Tokenizer
 
 def clear_gpu_memory():
     """Clear GPU memory"""
@@ -15,7 +15,7 @@ def clear_gpu_memory():
 class EnhancedReasoningDataset(Dataset):
     """Enhanced dataset with all the fixes we discussed"""
     
-    def __init__(self, tokenizer: SimpleTokenizer, max_length: int = 128, max_examples_per_type: int = 200):
+    def __init__(self, tokenizer: Tokenizer, max_length: int = 128, max_examples_per_type: int = 200):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.max_examples_per_type = max_examples_per_type
@@ -203,7 +203,7 @@ def train_large_hrm_model():
     print(f"Using device: {device}")
     
     # MUCH LARGER MODEL for better learning capacity
-    tokenizer = SimpleTokenizer(vocab_size=1500)  # Larger vocabulary
+    tokenizer = Tokenizer(vocab_size=1500)  # Larger vocabulary
     
     # SIGNIFICANTLY INCREASED MODEL SIZE
     model = create_hrm_model(

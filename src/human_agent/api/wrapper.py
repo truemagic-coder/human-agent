@@ -3,7 +3,7 @@ import json
 import re
 from typing import List, Dict, Any, Optional, Union
 from ..core.model import HierarchicalReasoningModel
-from ..core.tokenizer import SimpleTokenizer
+from ..core.tokenizer import Tokenizer
 from ..functions.registry import FunctionRegistry
 from ..functions.builtin import register_builtin_functions
 
@@ -13,7 +13,7 @@ class HRMChatWrapper:
     def __init__(
         self,
         model: HierarchicalReasoningModel,
-        tokenizer: SimpleTokenizer,
+        tokenizer: Tokenizer,
         function_registry: FunctionRegistry = None,
         device: str = "cpu"
     ):
@@ -409,7 +409,7 @@ def create_chat_model(
     model_kwargs = model_kwargs or {}
     
     # Create tokenizer
-    tokenizer = SimpleTokenizer(vocab_size)
+    tokenizer = Tokenizer(vocab_size)
     
     # Create model with updated vocab size
     actual_vocab_size = len(tokenizer.vocab)
