@@ -150,18 +150,18 @@ def train_10hour_hrm_model():
     torch.cuda.set_per_process_memory_fraction(0.8)
     print("🚀 Using H200 with 80% memory allocation")
     
-    # OPTIMIZED MODEL FOR 10-HOUR BUDGET
-    # Target: ~1-2B parameters for faster training
-    print("\n🧠 Creating optimized model for 10-hour training...")
+    # MUCH LARGER MODEL TO REACH 1-2B PARAMETERS
+    print("\n🧠 Creating LARGE model for 10-hour training...")
     
-    tokenizer = SimpleTokenizer(vocab_size=8000)  # Smaller vocab for speed
+    tokenizer = SimpleTokenizer(vocab_size=16000)  # Larger vocab
     
+    # CALCULATE FOR 1-2B PARAMETERS
     model = create_hrm_model(
         vocab_size=len(tokenizer.vocab),
-        dim=1536,         # Good balance: capability vs speed
-        n_heads=24,       # Efficient attention
-        N=3,              # 3 reasoning cycles
-        T=6,              # 6 steps per cycle
+        dim=2048,         # MUCH larger: 1536 → 2048
+        n_heads=32,       # MUCH more heads: 24 → 32
+        N=4,              # More cycles: 3 → 4
+        T=8,              # More steps: 6 → 8
         use_act=True,
         dropout=0.1
     )
@@ -169,21 +169,43 @@ def train_10hour_hrm_model():
     model = model.to(device)
     total_params = sum(p.numel() for p in model.parameters())
     
-    # Calculate memory and time estimates
+    print(f"🎯 MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+    
+    # If still too small, make it even bigger
+    if total_params < 500_000_000:  # Less than 500M
+        print("📈 Model too small! Scaling up further...")
+        model = create_hrm_model(
+            vocab_size=len(tokenizer.vocab),
+            dim=2560,         # Even bigger
+            n_heads=40,       # Even more heads
+            N=5,              # Even more cycles
+            T=10,             # Even more steps
+            use_act=True,
+            dropout=0.1
+        )
+        model = model.to(device)
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"🎯 SCALED MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
+    
+    # Calculate memory requirements
     param_memory = total_params * 4 / 1e9
     gradient_memory = total_params * 4 / 1e9
     optimizer_memory = total_params * 8 / 1e9
-    activation_memory = 10.0
+    activation_memory = 15.0
     total_memory_needed = param_memory + gradient_memory + optimizer_memory + activation_memory
     
-    print(f"🎯 MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
-    print(f"📊 Memory: {total_memory_needed:.1f} GB / 150 GB available")
+    print(f"📊 Memory breakdown:")
+    print(f"   Parameters: {param_memory:.1f} GB")
+    print(f"   Gradients: {gradient_memory:.1f} GB")
+    print(f"   Optimizer: {optimizer_memory:.1f} GB")
+    print(f"   Activations: {activation_memory:.1f} GB")
+    print(f"   Total: {total_memory_needed:.1f} GB / 150 GB available")
     
     # Create optimized dataset
     print("\nCreating focused dataset...")
     dataset = OptimizedReasoningDataset(tokenizer, max_length=128)
     
-    batch_size = 8  # Larger batch for efficiency
+    batch_size = 4  # Smaller batch for larger model
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -196,7 +218,7 @@ def train_10hour_hrm_model():
     
     # Estimate training time
     total_batches = len(dataloader)
-    estimated_time_per_batch = 2.0  # seconds (conservative estimate)
+    estimated_time_per_batch = 4.0  # Higher estimate for larger model
     estimated_time_per_epoch = total_batches * estimated_time_per_batch
     max_possible_epochs = int(MAX_TRAINING_TIME / estimated_time_per_epoch)
     
@@ -207,13 +229,13 @@ def train_10hour_hrm_model():
     print(f"   Maximum possible epochs in 10h: {max_possible_epochs}")
     
     # Adaptive epoch planning
-    target_epochs = min(max_possible_epochs, 8)  # Cap at 8 epochs
+    target_epochs = min(max_possible_epochs, 6)  # Cap at 6 epochs for larger model
     print(f"🎯 Target epochs: {target_epochs}")
     
-    # Optimizer
+    # More aggressive optimizer for large model
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=2e-4,          # Higher LR for faster learning
+        lr=5e-4,          # MUCH higher LR: 2e-4 → 5e-4
         weight_decay=0.01,
         betas=(0.9, 0.95),
         eps=1e-8
@@ -224,23 +246,23 @@ def train_10hour_hrm_model():
         optimizer, T_max=target_epochs, eta_min=1e-7
     )
     
-    print(f"\n🚀 Starting 10-hour optimized training...")
+    print(f"\n🚀 Starting LARGE model training...")
     model.train()
     best_loss = float('inf')
     
-    # Initialize model weights
+    # More aggressive weight initialization
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):
-            torch.nn.init.xavier_uniform_(m.weight, gain=0.2)
+            torch.nn.init.xavier_uniform_(m.weight, gain=0.5)  # Higher gain: 0.2 → 0.5
             if m.bias is not None:
                 torch.nn.init.zeros_(m.bias)
         elif isinstance(m, torch.nn.Embedding):
-            torch.nn.init.normal_(m.weight, std=0.02)
+            torch.nn.init.normal_(m.weight, std=0.05)  # Higher std: 0.02 → 0.05
     
     model.apply(init_weights)
-    print("Applied optimized initialization")
+    print("Applied aggressive initialization for large model")
     
-    # Training loop with progress tracking
+    # Training loop with enhanced stability measures
     for epoch in range(target_epochs):
         epoch_start_time = time.time()
         elapsed_time = epoch_start_time - start_time
@@ -254,7 +276,6 @@ def train_10hour_hrm_model():
         print(f"Epoch {epoch+1}/{target_epochs}")
         print(f"⏰ Elapsed: {format_time(elapsed_time)}")
         print(f"⏳ Remaining: {format_time(remaining_time)}")
-        print(f"🎯 Target finish: {format_time(remaining_time / (target_epochs - epoch))}")
         
         epoch_loss = 0
         epoch_steps = 0
@@ -272,7 +293,7 @@ def train_10hour_hrm_model():
                 print("⏰ Time budget exhausted during epoch!")
                 break
             
-            if batch_idx % 10 == 0:
+            if batch_idx % 5 == 0:  # More frequent memory clearing
                 clear_gpu_memory()
             
             input_ids = batch["input_ids"].to(device, non_blocking=True)
@@ -282,12 +303,12 @@ def train_10hour_hrm_model():
             optimizer.zero_grad()
             
             try:
-                # Optimized forward pass
+                # More permissive forward pass for large model
                 result = model(
                     input_ids,
-                    max_segments=2,   # Conservative for speed
+                    max_segments=1,   # Start with single segment
                     min_segments=1,
-                    epsilon=0.7,      # Balanced stopping
+                    epsilon=0.9,      # Very high epsilon for initial stability
                     training=True
                 )
                 
@@ -296,20 +317,22 @@ def train_10hour_hrm_model():
                 
                 loss = model.compute_loss(result['outputs'], target_ids, result['q_values'])
                 
-                if torch.isnan(loss) or torch.isinf(loss) or loss.item() > 3000:
+                # MUCH more lenient loss checking
+                if torch.isnan(loss) or torch.isinf(loss) or loss.item() > 10000:
                     continue
                 
-                # Gradient accumulation
-                loss = loss / 4  # Accumulate over 4 steps
+                # No gradient accumulation for simplicity
                 loss.backward()
                 
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.5)
+                # More permissive gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                 
-                if grad_norm < 15.0:
+                # VERY permissive gradient threshold
+                if grad_norm < 50.0:  # Much higher threshold: 15.0 → 50.0
                     optimizer.step()
                     successful_steps += 1
                     
-                    loss_value = loss.item() * 4  # Undo accumulation
+                    loss_value = loss.item()
                     epoch_loss += loss_value
                     epoch_steps += 1
                     
@@ -318,10 +341,11 @@ def train_10hour_hrm_model():
                     success_rate = 100 * successful_steps / (batch_idx + 1)
                     
                     pbar.set_postfix({
-                        'Loss': f'{loss_value:.3f}',
+                        'Loss': f'{loss_value:.1f}',
                         'Success': f'{success_rate:.1f}%',
                         'Time': f'{batch_time:.2f}s',
-                        'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB'
+                        'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
+                        'GradNorm': f'{grad_norm:.1f}'
                     })
                 else:
                     optimizer.zero_grad()
@@ -329,11 +353,14 @@ def train_10hour_hrm_model():
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
+                    print(f"\n⚠️  OOM at batch {batch_idx}! Current GPU: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
                     clear_gpu_memory()
                     continue
                 else:
+                    print(f"\n⚠️  Runtime error: {str(e)[:100]}")
                     continue
             except Exception as e:
+                print(f"\n⚠️  Other error: {str(e)[:100]}")
                 continue
         
         pbar.close()
@@ -346,12 +373,13 @@ def train_10hour_hrm_model():
         print(f"\n📊 Epoch {epoch+1} Summary:")
         print(f"   Average Loss: {avg_loss:.4f}")
         print(f"   Success Rate: {success_rate:.1f}%")
+        print(f"   Successful Steps: {successful_steps}/{len(dataloader)}")
         print(f"   Epoch Time: {format_time(epoch_time)}")
         print(f"   Batches/sec: {len(dataloader)/epoch_time:.2f}")
         print(f"   GPU Memory: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
         
-        # Save best model
-        if avg_loss < best_loss and avg_loss < 1000 and success_rate > 10:
+        # MUCH more lenient saving conditions
+        if avg_loss < best_loss and avg_loss < 5000 and success_rate > 1:  # Just 1% success needed!
             best_loss = avg_loss
             torch.save({
                 'epoch': epoch,
@@ -361,26 +389,28 @@ def train_10hour_hrm_model():
                 'tokenizer': tokenizer,
                 'config': {
                     'vocab_size': len(tokenizer.vocab),
-                    'dim': 1536,
-                    'n_heads': 24,
-                    'N': 3,
-                    'T': 6,
+                    'dim': 2048 if total_params < 1_000_000_000 else 2560,
+                    'n_heads': 32 if total_params < 1_000_000_000 else 40,
+                    'N': 4 if total_params < 1_000_000_000 else 5,
+                    'T': 8 if total_params < 1_000_000_000 else 10,
                     'total_params': total_params
                 },
                 'training_time': time.time() - start_time
             }, 'hrm_10hour_model.pt')
-            print(f"🎯 Saved best model! Loss: {avg_loss:.4f}")
+            print(f"🎯 Saved best LARGE model! Loss: {avg_loss:.4f}")
         
-        scheduler.step()
+        # Only step scheduler if we had successful steps
+        if successful_steps > 0:
+            scheduler.step()
         
-        # Early stopping for time or poor performance
-        if success_rate < 5:
-            print("⚠️  Success rate too low, stopping early")
-            break
+        # More lenient early stopping
+        if success_rate < 0.5:  # Even 0.5% is progress!
+            print(f"⚠️  Success rate very low ({success_rate:.1f}%), but continuing...")
+            # Don't stop - keep trying
         
         # Time check
         total_elapsed = time.time() - start_time
-        if total_elapsed > MAX_TRAINING_TIME * 0.95:  # 95% of budget used
+        if total_elapsed > MAX_TRAINING_TIME * 0.95:
             print("⏰ Approaching time limit, stopping training")
             break
         
@@ -391,7 +421,7 @@ def train_10hour_hrm_model():
     total_training_time = time.time() - start_time
     finish_time = datetime.datetime.now()
     
-    print(f"\n🎉 10-HOUR TRAINING COMPLETED!")
+    print(f"\n🎉 LARGE MODEL TRAINING COMPLETED!")
     print(f"📊 Final Results:")
     print(f"   Best Loss: {best_loss:.4f}")
     print(f"   Model: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
@@ -399,6 +429,15 @@ def train_10hour_hrm_model():
     print(f"   Finished: {finish_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   Budget Used: {100*total_training_time/MAX_TRAINING_TIME:.1f}%")
     print(f"💾 Model saved: hrm_10hour_model.pt")
+    
+    if best_loss == float('inf'):
+        print("\n⚠️  WARNING: No successful training steps achieved!")
+        print("🔍 This suggests the model architecture needs fundamental changes")
+        print("💡 Consider:")
+        print("   - Even smaller learning rates (1e-5)")
+        print("   - Simpler model architecture")
+        print("   - Different initialization strategies")
+        print("   - Debugging the forward pass")
 
 if __name__ == "__main__":
     train_10hour_hrm_model()
