@@ -2,6 +2,7 @@ import time
 import torch
 import json
 import re
+import torch.nn.functional as F
 from typing import List, Dict, Any, Optional
 from ..core.model import HierarchicalReasoningModel
 from ..core.tokenizer import Tokenizer
