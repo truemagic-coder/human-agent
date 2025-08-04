@@ -140,7 +140,7 @@ def train_hrm_model(target_epochs=1):
 
     # --- Optimizer and Scheduler ---
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    scaler = GradScaler() # For mixed precision
+    scaler = torch.amp.GradScaler(device=device.type) # For mixed precision
     
     # --- Training Loop ---
     print(f"\n🚀 Starting model training for {target_epochs} epochs...")
@@ -194,7 +194,6 @@ def train_hrm_model(target_epochs=1):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'tokenizer': tokenizer,
-                'config': model.config, # Save model config directly
             }, 'hrm_trained_model.pt')
 
         print(f"\n📊 Epoch {epoch+1} Summary:")
