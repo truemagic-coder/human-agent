@@ -2,11 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization"""
-    def __init__(self, dim: int, eps: float = 1e-8):
+    def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
@@ -15,238 +14,255 @@ class RMSNorm(nn.Module):
         norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
         return x * norm * self.weight
 
-class GLU(nn.Module):
-    """Gated Linear Unit"""
-    def __init__(self, dim: int):
+class SwiGLU(nn.Module):
+    def __init__(self, hidden_size: int, expansion: float = 2.0):
         super().__init__()
-        self.proj = nn.Linear(dim, dim * 2, bias=False)
+        self.hidden_size = hidden_size
+        self.expansion_size = int(hidden_size * expansion)
+        self.fc1 = nn.Linear(hidden_size, self.expansion_size, bias=False)
+        self.fc2 = nn.Linear(hidden_size, self.expansion_size, bias=False)
+        self.fc_out = nn.Linear(self.expansion_size, hidden_size, bias=False)
 
     def forward(self, x):
-        x, gate = self.proj(x).chunk(2, dim=-1)
-        return x * F.silu(gate)
+        return self.fc_out(F.silu(self.fc1(x)) * self.fc2(x))
 
-class TransformerBlock(nn.Module):
-    """Simplified Transformer block"""
-    def __init__(self, dim: int, n_heads: int = 8, dropout: float = 0.1):
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 10000.0):
         super().__init__()
         self.dim = dim
-        self.n_heads = n_heads
-        self.head_dim = dim // n_heads
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
         
-        # Multi-head attention
-        self.qkv = nn.Linear(dim, dim * 3, bias=False)
-        self.out_proj = nn.Linear(dim, dim, bias=False)
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
         
-        # Feed-forward
-        self.ff = nn.Sequential(
-            nn.Linear(dim, dim * 4),
-            nn.GELU(),
-            nn.Linear(dim * 4, dim),
-        )
-        
-        # Layer norms
-        self.norm1 = nn.LayerNorm(dim)
-        self.norm2 = nn.LayerNorm(dim)
-        
-        self.dropout = nn.Dropout(dropout)
+        # Pre-compute for efficiency
+        t = torch.arange(max_position_embeddings, dtype=torch.float32)
+        freqs = torch.einsum("i,j->ij", t, inv_freq)
+        self.register_buffer("cos_cached", torch.cos(freqs), persistent=False)
+        self.register_buffer("sin_cached", torch.sin(freqs), persistent=False)
 
-    def forward(self, x, mask=None):
-        # Self-attention with residual
-        residual = x
-        x = self.norm1(x)
+    def apply_rotary_pos_emb(self, q, k, seq_len):
+        cos = self.cos_cached[:seq_len]
+        sin = self.sin_cached[:seq_len]
         
-        B, T, C = x.shape
-        qkv = self.qkv(x).view(B, T, 3, self.n_heads, self.head_dim)
-        q, k, v = qkv.permute(2, 0, 3, 1, 4)  # [3, B, nh, T, hd]
+        def rotate_half(x):
+            x1, x2 = x[..., ::2], x[..., 1::2]
+            return torch.cat((-x2, x1), dim=-1)
+        
+        q_embed = (q * cos) + (rotate_half(q) * sin)
+        k_embed = (k * cos) + (rotate_half(k) * sin)
+        return q_embed, k_embed
+
+class Attention(nn.Module):
+    def __init__(self, hidden_size: int, num_heads: int, causal: bool = False):
+        super().__init__()
+        assert hidden_size % num_heads == 0
+        
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.causal = causal
+        self.scale = 1.0 / math.sqrt(self.head_dim)
+        
+        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.out_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor, rotary_emb: Optional[RotaryEmbedding] = None):
+        B, T, C = hidden_states.shape
+        
+        q = self.q_proj(hidden_states).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(hidden_states).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(hidden_states).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # Apply rotary embeddings
+        if rotary_emb is not None:
+            q, k = rotary_emb.apply_rotary_pos_emb(q, k, T)
         
         # Attention
-        scale = 1.0 / math.sqrt(self.head_dim)
-        attn = (q @ k.transpose(-2, -1)) * scale
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
         
-        if mask is not None:
-            attn = attn.masked_fill(mask == 0, -float('inf'))
+        if self.causal:
+            mask = torch.tril(torch.ones(T, T, device=attn_scores.device, dtype=torch.bool))
+            attn_scores = attn_scores.masked_fill(~mask, float('-inf'))
         
-        attn = F.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
+        attn_probs = F.softmax(attn_scores, dim=-1)
+        attn_output = torch.matmul(attn_probs, v)
         
-        out = attn @ v
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-        out = self.out_proj(out)
-        
-        x = residual + out
-        
-        # Feed-forward with residual
-        residual = x
-        x = self.norm2(x)
-        x = self.ff(x)
-        x = residual + x
-        
-        return x
+        # Reshape and project
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, C)
+        return self.out_proj(attn_output)
 
-class RecurrentModule(nn.Module):
-    """Simplified recurrent module for HRM"""
-    def __init__(self, dim: int, n_heads: int = 8):
+class HierarchicalReasoningBlock(nn.Module):
+    def __init__(self, dim: int, num_heads: int, expansion: float = 2.0, eps: float = 1e-5):
         super().__init__()
-        self.transformer = TransformerBlock(dim, n_heads)
-        self.combine = nn.Linear(dim * 3, dim)  # Combine 3 inputs
-        self.dim = dim
+        self.self_attn = Attention(dim, num_heads, causal=False)
+        self.mlp = SwiGLU(dim, expansion)
+        self.norm1 = RMSNorm(dim, eps)
+        self.norm2 = RMSNorm(dim, eps)
 
-    def forward(self, hidden_state, *inputs):
-        """Update hidden state based on inputs"""
-        # Combine all inputs
-        all_inputs = [hidden_state]
-        for inp in inputs:
-            if inp is not None:
-                all_inputs.append(inp)
+    def forward(self, hidden_states: torch.Tensor, rotary_emb: Optional[RotaryEmbedding] = None):
+        # Pre-norm architecture
+        normed = self.norm1(hidden_states)
+        attn_out = self.self_attn(normed, rotary_emb)
+        hidden_states = hidden_states + attn_out
         
-        # Pad to 3 inputs if needed
-        while len(all_inputs) < 3:
-            all_inputs.append(torch.zeros_like(hidden_state))
+        normed = self.norm2(hidden_states)
+        mlp_out = self.mlp(normed)
+        hidden_states = hidden_states + mlp_out
         
-        # Combine inputs
-        combined = torch.cat(all_inputs[:3], dim=-1)  # [B, T, 3*dim]
-        combined = self.combine(combined)  # [B, T, dim]
+        return hidden_states
+
+class ReasoningModule(nn.Module):
+    def __init__(self, dim: int, num_heads: int, num_layers: int, expansion: float = 2.0):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            HierarchicalReasoningBlock(dim, num_heads, expansion) 
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, hidden_states: torch.Tensor, input_injection: torch.Tensor, 
+                rotary_emb: Optional[RotaryEmbedding] = None):
+        # Input injection
+        hidden_states = hidden_states + input_injection
         
-        # Apply transformer
-        new_state = self.transformer(combined)
-        return new_state
+        # Apply layers
+        for layer in self.layers:
+            hidden_states = layer(hidden_states, rotary_emb)
+        
+        return hidden_states
 
 class HierarchicalReasoningModel(nn.Module):
-    """
-    Simplified HRM - keeps hierarchical reasoning but fixes training issues
-    """
     def __init__(
         self,
         vocab_size: int,
         dim: int = 512,
         n_heads: int = 8,
         max_seq_len: int = 1024,
-        N: int = 2,  # REDUCED: 4 → 2 cycles
-        T: int = 4,  # REDUCED: 8 → 4 steps  
-        dropout: float = 0.1
+        N: int = 4,  # High-level cycles
+        T: int = 8,  # Low-level steps per cycle
+        dropout: float = 0.1,
+        H_layers: int = 2,
+        L_layers: int = 2,
+        expansion: float = 2.0,
+        eps: float = 1e-5,
+        rope_theta: float = 10000.0,
     ):
         super().__init__()
+        assert dim % n_heads == 0, "dim must be divisible by n_heads"
+        
         self.vocab_size = vocab_size
         self.dim = dim
+        self.n_heads = n_heads
         self.N = N
         self.T = T
         self.max_seq_len = max_seq_len
-        
-        # Input embedding
-        self.input_embedding = nn.Embedding(vocab_size, dim)
-        self.pos_embedding = nn.Parameter(torch.randn(max_seq_len, dim) * 0.02)
-        
-        # Simplified recurrent modules
-        self.low_level_module = RecurrentModule(dim, n_heads)
-        self.high_level_module = RecurrentModule(dim, n_heads)
-        
-        # Output head
-        self.ln_f = nn.LayerNorm(dim)
-        self.output_head = nn.Linear(dim, vocab_size, bias=False)
-        
-        # SIMPLIFIED: No ACT, no Q-heads
-        
-        # Initialize hidden states  
-        self.register_buffer('z_init_L', torch.zeros(1, 1, dim))
-        self.register_buffer('z_init_H', torch.zeros(1, 1, dim))
-        
+
+        # Embeddings
+        self.token_embedding = nn.Embedding(vocab_size, dim)
         self.dropout = nn.Dropout(dropout)
         
-        # Conservative initialization
-        self.apply(self._init_weights)
-    
-    def _init_weights(self, module):
-        """Conservative initialization"""
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        # Position encoding
+        self.rotary_emb = RotaryEmbedding(
+            dim // n_heads, 
+            max_position_embeddings=max_seq_len, 
+            base=rope_theta
+        )
+
+        # Reasoning modules
+        self.H_level = ReasoningModule(dim, n_heads, H_layers, expansion)
+        self.L_level = ReasoningModule(dim, n_heads, L_layers, expansion)
+
+        # Output
+        self.output_norm = RMSNorm(dim, eps)
+        self.output_head = nn.Linear(dim, vocab_size, bias=False)
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        # Token embedding
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        
+        # Output head (tied to token embedding for efficiency)
+        nn.init.normal_(self.output_head.weight, std=0.02)
+        
+        # Initialize all linear layers
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def forward(
-        self, 
-        x: torch.Tensor, 
-        max_segments: int = 2,  # SIMPLIFIED: Only 1-2 segments
-        min_segments: int = 1,
-        epsilon: float = 0.8,   # High epsilon for stability
-        training: bool = True
+        self,
+        input_ids: torch.Tensor,
     ) -> Dict[str, Any]:
-        """
-        Simplified forward pass - no complex ACT logic
-        """
-        B, seq_len = x.shape
+        B, seq_len = input_ids.shape
+        device = input_ids.device
         
-        # Input embedding
-        x_embed = self.input_embedding(x)
-        if seq_len <= self.max_seq_len:
-            pos_embed = self.pos_embedding[:seq_len].unsqueeze(0)
-            x_embed = x_embed + pos_embed
+        # Token embeddings
+        x_embed = self.token_embedding(input_ids)
         x_embed = self.dropout(x_embed)
         
-        # Initialize hidden states
-        z_L = self.z_init_L.expand(B, seq_len, -1).contiguous()
-        z_H = self.z_init_H.expand(B, seq_len, -1).contiguous()
-        
-        # FIXED: Single reasoning segment with gradient flow
-        z_H, z_L, output = self._hrm_forward_pass(z_L, z_H, x_embed)
-        
-        # SIMPLIFIED: Return single output
+        # Scale embeddings
+        x_embed = x_embed * math.sqrt(self.dim)
+
+        # Initialize reasoning states
+        z_H = torch.zeros(B, seq_len, self.dim, device=device, dtype=x_embed.dtype)
+        z_L = torch.zeros(B, seq_len, self.dim, device=device, dtype=x_embed.dtype)
+
+        # Hierarchical reasoning cycles
+        for _ in range(self.N):
+            # Low-level reasoning steps
+            for _ in range(self.T):
+                z_L = self.L_level(z_L, z_H + x_embed, self.rotary_emb)
+            
+            # High-level reasoning step
+            z_H = self.H_level(z_H, z_L, self.rotary_emb)
+
+        # Output projection
+        hidden_states = self.output_norm(z_H)
+        logits = self.output_head(hidden_states)
+
         return {
-            'outputs': output,  # Single output, not list
-            'q_values': torch.ones(B, 1, device=x.device),  # Dummy q-values
-            'num_segments': 1,
-            'final_states': (z_H, z_L)
+            'outputs': logits,
+            'final_states': (z_H, z_L),
+            'num_cycles': self.N,
+            'steps_per_cycle': self.T
         }
 
-    def _hrm_forward_pass(self, z_L, z_H, x_embed):
-        """
-        FIXED: Single forward pass with proper gradient flow
-        """
-        # Hierarchical reasoning: N cycles of T steps each
-        for cycle in range(self.N):
-            # Low-level updates (T steps with current high-level state)
-            for step in range(self.T):
-                z_L = self.low_level_module(z_L, z_H, x_embed)
-            
-            # High-level update (once per cycle, using updated low-level)
-            z_H = self.high_level_module(z_H, z_L, x_embed)
+    def compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor, 
+                     ignore_index: int = -100) -> torch.Tensor:
+        """Compute cross-entropy loss"""
+        shift_logits = outputs[..., :-1, :].contiguous()
+        shift_labels = targets[..., 1:].contiguous()
         
-        # Generate output from final high-level state
-        z_H = self.ln_f(z_H)
-        output = self.output_head(z_H)
-        
-        return z_H, z_L, output
-
-    def compute_loss(self, outputs, targets, q_values=None):
-        """
-        SIMPLIFIED: Single cross-entropy loss
-        """
-        # Single output - simple cross-entropy
-        if isinstance(outputs, list):
-            outputs = outputs[-1]  # Take final output
-            
         loss = F.cross_entropy(
-            outputs.view(-1, self.vocab_size),
-            targets.view(-1),
-            ignore_index=-100,
-            reduction='mean'
+            shift_logits.view(-1, self.vocab_size),
+            shift_labels.view(-1),
+            ignore_index=ignore_index
         )
-        
         return loss
 
 def create_hrm_model(vocab_size: int, **kwargs) -> HierarchicalReasoningModel:
-    """
-    Factory function for simplified HRM
-    """
+    """Factory function to create HRM model with sensible defaults"""
     default_config = {
         'dim': 512,
         'n_heads': 8,
         'max_seq_len': 1024,
-        'N': 2,  # Reduced complexity
-        'T': 4,  # Reduced complexity
-        'dropout': 0.1
+        'N': 4,
+        'T': 8,
+        'dropout': 0.1,
+        'H_layers': 2,
+        'L_layers': 2,
+        'expansion': 2.0,
+        'eps': 1e-5,
+        'rope_theta': 10000.0,
     }
     
+    # Override defaults with provided kwargs
     config = {**default_config, **kwargs}
     return HierarchicalReasoningModel(vocab_size, **config)
