@@ -287,10 +287,6 @@ def train_hrm_model(target_epochs=1):
             try:
                 result = model(
                     input_ids,
-                    max_segments=1,
-                    min_segments=1,
-                    epsilon=0.99,
-                    training=True
                 )
                 
                 if result is None:
@@ -324,7 +320,7 @@ def train_hrm_model(target_epochs=1):
                 except Exception:
                     try:
                         if len(outputs.shape) == 3:
-                            batch_size, seq_len, vocab_size = outputs.shape
+                            batch_size, _, vocab_size = outputs.shape
                             outputs_flat = outputs.view(-1, vocab_size)
                             targets_flat = target_ids.view(-1)
                             loss = torch.nn.functional.cross_entropy(
@@ -518,4 +514,3 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to train")
     args = parser.parse_args()
     train_hrm_model(target_epochs=args.epochs)
-    
