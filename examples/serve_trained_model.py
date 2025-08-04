@@ -36,6 +36,9 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
 
     # Create the model with the exact config it was trained with
     model = create_hrm_model(**config)
+
+    print(checkpoint['model_state_dict'].keys())  # Debugging line
+    print(model.state_dict().keys())  # Debugging line
     
     # Load the weights
     model.load_state_dict(checkpoint['model_state_dict'])
