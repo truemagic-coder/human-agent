@@ -51,7 +51,7 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
         print(f"🔍 Detected from weights: vocab_size={actual_vocab_size}, dim={actual_dim}")
     else:
         # Fallback to config
-        actual_dim = config.get('dim', 2560)
+        actual_dim = config.get('dim', 2048)
         actual_vocab_size = config.get('vocab_size', len(tokenizer.vocab))
         print(f"🔍 Using config: vocab_size={actual_vocab_size}, dim={actual_dim}")
     

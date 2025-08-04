@@ -8,7 +8,6 @@ import datetime
 import argparse
 from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset
-from torch.cuda.amp import GradScaler, autocast
 from human_agent.core.model import create_hrm_model
 from human_agent.core.tokenizer import Tokenizer
 
@@ -194,6 +193,7 @@ def train_hrm_model(target_epochs=1):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'tokenizer': tokenizer,
+                'config': model.config,  # Save model config directly
             }, 'hrm_trained_model.pt')
 
         print(f"\n📊 Epoch {epoch+1} Summary:")

@@ -156,6 +156,16 @@ class HierarchicalReasoningModel(nn.Module):
         super().__init__()
         assert dim % n_heads == 0, "dim must be divisible by n_heads"
         
+        self.config = {
+            "vocab_size": vocab_size,
+            "dim": dim,
+            "n_heads": n_heads,
+            "N": N,
+            "T": T,
+            "dropout": dropout,
+            "max_seq_len": max_seq_len,
+        }
+
         self.vocab_size = vocab_size
         self.dim = dim
         self.n_heads = n_heads
