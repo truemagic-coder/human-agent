@@ -158,7 +158,7 @@ def train_hrm_model(target_epochs=1):
             optimizer.zero_grad()
             
             # Use Automatic Mixed Precision (AMP)
-            with autocast():
+            with torch.amp.autocast():
                 result = model(input_ids)
                 logits = result['outputs']
                 
@@ -209,4 +209,3 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to train")
     args = parser.parse_args()
     train_hrm_model(target_epochs=args.epochs)
-    
