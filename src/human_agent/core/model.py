@@ -248,5 +248,4 @@ class HierarchicalReasoningModel(nn.Module):
         return loss
 
 def create_hrm_model(vocab_size: int, **kwargs) -> HierarchicalReasoningModel:
-    config = {**kwargs}
-    return HierarchicalReasoningModel(vocab_size, **config)
+    return HierarchicalReasoningModel(vocab_size, **kwargs)
