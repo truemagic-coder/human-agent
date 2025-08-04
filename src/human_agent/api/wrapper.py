@@ -232,21 +232,22 @@ class HRMChatWrapper:
         
         # Generate a natural language summary of the function result
         response_text = self._generate_response(prompt, kwargs.get('max_tokens', 150), kwargs.get('temperature', 0.7))
-        response_text = response_text.replace("<assistant>", "").strip()
+        
+        # FIX: Add the same fallback logic here for robustness.
+        if not response_text or len(response_text) < 5:
+            response_text = "I have processed the information. What would you like to do next?"
 
-        if not response_text: # Fallback if generation is empty
-            func_result = messages[-1].get('content', 'an error occurred')
-            response_text = f"The result is: {func_result}"
-
+        choice = {
+            "index": 0,
+            "message": {"role": "assistant", "content": response_text},
+            "finish_reason": "stop"
+        }
+            
         return {
             "id": f"chatcmpl-hrm-{abs(hash(str(messages)))}",
             "object": "chat.completion",
-            "created": int(torch.cuda.Event().record().elapsed_time(torch.cuda.Event().record())),
+            "created": int(time.time()),
             "model": "hrm-agent",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": response_text},
-                "finish_reason": "stop"
-            }]
+            "choices": [choice]
         }
     

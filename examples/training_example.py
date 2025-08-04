@@ -125,7 +125,12 @@ def train_hrm_model(target_epochs=1):
     tokenizer.add_special_tokens(special_tokens)
     model = create_hrm_model(
         vocab_size=len(tokenizer.vocab),
-        dim=2048, n_heads=32, N=4, T=8, dropout=0.1, max_seq_len=256
+        dim=768,
+        n_heads=12,       
+        N=6,              
+        T=8, 
+        dropout=0.1, 
+        max_seq_len=256
     ).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"🎯 Model Size: {total_params:,} parameters ({total_params/1e9:.2f}B)")
