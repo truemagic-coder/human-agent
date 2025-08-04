@@ -1,3 +1,4 @@
+import re
 import torch
 import torch.optim as optim
 import random
@@ -8,6 +9,7 @@ import datetime
 import argparse
 from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset
+from datasets import load_dataset
 from human_agent.core.model import create_hrm_model
 from human_agent.core.tokenizer import Tokenizer
 
@@ -19,60 +21,51 @@ def clear_gpu_memory():
 
 class ReasoningDataset(Dataset):
     """
-    A more robust dataset focusing on quality and standard instruction formats.
-    The model learns to predict the `output` given the `input`.
+    Dataset that sources from high-quality public datasets like OpenOrca
+    and MetaMathQA to teach general reasoning and function calling.
     """
-    def __init__(self, tokenizer: Tokenizer, max_length: int = 256):
+    def __init__(self, tokenizer: Tokenizer, max_length: int = 256, num_examples=10000):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.examples = []
         
-        print("🧠 Creating improved dataset for training...")
-        self._prepare_dataset()
+        print("🧠 Creating dataset from public sources (OpenOrca, MetaMathQA)...")
+        self._prepare_dataset(num_examples)
         
         random.shuffle(self.examples)
         print(f"✅ Created {len(self.examples)} high-quality training examples.")
 
-    def _prepare_dataset(self):
-        # Conversational examples
-        conversational_examples = [
-            ("Hello", "Hello! I am an AI assistant. How can I help you today?"),
-            ("What is your name?", "I am a helpful AI assistant trained to follow instructions."),
-            ("What can you do?", "I can assist with tasks like mathematical calculations, and answering questions based on provided context."),
-            ("Thank you", "You're welcome!"),
-            ("How are you?", "I am a machine learning model, but I'm ready to help!"),
-        ]
-        for q, a in conversational_examples:
-            self.examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
+    def _prepare_dataset(self, num_examples):
+        # --- Process OpenOrca for general instruction following ---
+        # We take a small slice for demonstration purposes.
+        print("Downloading and processing OpenOrca dataset...")
+        orca_dataset = load_dataset("Open-Orca/OpenOrca", split=f"train[:{int(num_examples * 0.7)}]")
+        for item in tqdm(orca_dataset, desc="Processing Orca"):
+            q = item['question']
+            a = item['response']
+            # We only want shorter, high-quality examples for this training
+            if len(q) > 10 and len(a) > 10 and len(q) + len(a) < 1000:
+                 self.examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
 
-        # Mathematical function calling
-        math_examples = [
-            ("What is 2^8?", "calculate(expression='2**8')"),
-            ("Calculate (5 + 3) * 4", "calculate(expression='(5 + 3) * 4')"),
-            ("What's 15% of 200?", "calculate(expression='(15/100)*200')"),
-        ]
-        for instruction, call in math_examples:
-            self.examples.append({"input": f"<user>{instruction}</user>", "output": f"<assistant><function_call>{call}</function_call></assistant>"})
-
-        # Weather function calling
-        weather_examples = [
-            ("What's the weather in London?", "get_weather(location='London')"),
-            ("Is it raining in Paris?", "get_weather(location='Paris')"),
-            ("Temperature in Sydney?", "get_weather(location='Sydney')"),
-        ]
-        for instruction, call in weather_examples:
-            self.examples.append({"input": f"<user>{instruction}</user>", "output": f"<assistant><function_call>{call}</function_call></assistant>"})
-        
-        # Time function calling
-        time_examples = [
-            ("What time is it?", "get_current_time()"),
-            ("What is today's date?", "get_current_time()"),
-        ]
-        for instruction, call in time_examples:
-             self.examples.append({"input": f"<user>{instruction}</user>", "output": f"<assistant><function_call>{call}</function_call></assistant>"})
-
-        # Augment data by repeating high-quality examples
-        self.examples = self.examples * 500 # Repeat the core set to create a larger dataset
+        # --- Process MetaMathQA for math function calling ---
+        print("Downloading and processing MetaMathQA dataset...")
+        math_dataset = load_dataset("meta-math/MetaMathQA", split=f"train[:{int(num_examples * 0.3)}]")
+        for item in tqdm(math_dataset, desc="Processing MetaMath"):
+            q = item['query']
+            a = item['response']
+            
+            # Try to convert simple math questions into function calls
+            # This teaches the model to use the 'calculate' tool
+            math_expr_match = re.search(r'what is ([\d\s\.\+\-\*\/\(\)\^]+)\?', q.lower())
+            if math_expr_match:
+                expression = math_expr_match.group(1).strip().replace('^', '**')
+                self.examples.append({
+                    "input": f"<user>{q}</user>",
+                    "output": f"<assistant><function_call>calculate(expression='{expression}')</function_call></assistant>"
+                })
+            # Otherwise, use it as a standard Q&A pair for reasoning
+            elif len(q) + len(a) < 1000:
+                self.examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
 
     def __len__(self):
         return len(self.examples)
@@ -82,18 +75,19 @@ class ReasoningDataset(Dataset):
         input_text = example["input"]
         output_text = example["output"]
 
+        # Encode the text and add special tokens
         input_tokens = self.tokenizer.encode(input_text)
         output_tokens = self.tokenizer.encode(output_text)
 
-        # Combine and pad/truncate
+        # Combine, truncate, and add EOS token
         tokens = input_tokens + output_tokens
         tokens = tokens[:self.max_length-1] + [self.tokenizer.eos_token_id]
         
-        # Create labels and mask out the input part
+        # Create labels for loss calculation, masking the input tokens
         labels = [-100] * len(input_tokens) + output_tokens
         labels = labels[:self.max_length-1] + [self.tokenizer.eos_token_id]
         
-        # Pad to max_length
+        # Pad sequences to max_length
         pad_len = self.max_length - len(tokens)
         tokens.extend([self.tokenizer.pad_token_id] * pad_len)
         labels.extend([-100] * pad_len)
