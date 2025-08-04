@@ -138,7 +138,18 @@ def train_hrm_model(target_epochs=1):
 
     # --- Optimizer and Scheduler ---
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    scaler = torch.amp.GradScaler(device=device.type) # For mixed precision
+    scaler = torch.cuda.amp.GradScaler() # For mixed precision
+    
+    # Add a learning rate scheduler with warmup to stabilize training
+    num_training_steps = target_epochs * len(dataloader)
+    num_warmup_steps = int(0.1 * num_training_steps)  # 10% of steps are for warmup
+
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        return 1.0
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     # --- Training Loop ---
     print(f"\n🚀 Starting model training for {target_epochs} epochs...")
@@ -156,7 +167,7 @@ def train_hrm_model(target_epochs=1):
             optimizer.zero_grad()
             
             # Use Automatic Mixed Precision (AMP)
-            with torch.amp.autocast(device_type=device.type):
+            with torch.cuda.amp.autocast():
                 result = model(input_ids)
                 logits = result['outputs']
                 
@@ -181,7 +192,10 @@ def train_hrm_model(target_epochs=1):
             scaler.step(optimizer)
             scaler.update()
             
-            pbar.set_postfix({'Loss': f'{loss.item():.4f}', 'LR': f'{optimizer.param_groups[0]["lr"]:.2e}'})
+            # Step the scheduler
+            scheduler.step()
+            
+            pbar.set_postfix({'Loss': f'{loss.item():.4f}', 'LR': f'{scheduler.get_last_lr()[0]:.2e}'})
 
         # --- End of Epoch ---
         avg_loss = sum(pbar.iterable.last_loss for pbar in [pbar] if hasattr(pbar.iterable, 'last_loss')) / len(dataloader)
@@ -207,3 +221,4 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to train")
     args = parser.parse_args()
     train_hrm_model(target_epochs=args.epochs)
+    
