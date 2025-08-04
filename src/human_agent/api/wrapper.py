@@ -165,9 +165,9 @@ class HRMChatWrapper:
                 if any(stop in current_text for stop in stop_tokens):
                     break
         
-        full_text = self.tokenizer.decode(generated_ids)
-        # Remove the original prompt to get only the new generation
-        response = full_text[len(self.tokenizer.decode(input_ids)):]
+        # FIX: Extract only the newly generated tokens, not by character slicing
+        new_token_ids = generated_ids[len(input_ids):]
+        response = self.tokenizer.decode(new_token_ids)
         
         # Clean up stop tokens
         for stop in stop_tokens:
