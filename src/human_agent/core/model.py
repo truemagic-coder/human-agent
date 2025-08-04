@@ -58,8 +58,9 @@ def apply_rotary_pos_emb(q, k, cos, sin):
         x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
     
-    cos = cos.unsqueeze(1).unsqueeze(2)
-    sin = sin.unsqueeze(1).unsqueeze(2)
+    # FIX: Broadcast cos/sin to (1, 1, seq_len, head_dim)
+    cos = cos.unsqueeze(0).unsqueeze(0)
+    sin = sin.unsqueeze(0).unsqueeze(0)
     
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
