@@ -312,10 +312,6 @@ def fallback_generation(messages, max_tokens=150, temperature=0.7):
             try:
                 result = model(
                     input_ids,
-                    max_segments=1,
-                    min_segments=1,
-                    epsilon=0.9,     # LESS conservative: 0.99 → 0.9
-                    training=False
                 )
                 
                 if not result or 'outputs' not in result:
@@ -389,10 +385,6 @@ def fallback_generation(messages, max_tokens=150, temperature=0.7):
                     try:
                         result = model(
                             current_input,
-                            max_segments=1,
-                            min_segments=1,
-                            epsilon=0.9,
-                            training=False
                         )
                         
                         if result and 'outputs' in result:

@@ -1,3 +1,4 @@
+import time
 import torch
 import json
 import re
@@ -219,7 +220,7 @@ class HRMChatWrapper:
         return {
             "id": f"chatcmpl-hrm-{abs(hash(str(messages)))}",
             "object": "chat.completion",
-            "created": int(torch.cuda.Event().record().elapsed_time(torch.cuda.Event().record())),
+            "created": int(time.time()),
             "model": "hrm-agent",
             "choices": [choice]
         }
