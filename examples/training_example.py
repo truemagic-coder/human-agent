@@ -125,9 +125,9 @@ def train_hrm_model(target_epochs=1):
     tokenizer.add_special_tokens(special_tokens)
     model = create_hrm_model(
         vocab_size=len(tokenizer.vocab),
-        dim=768,
-        n_heads=12,       
-        N=6,              
+        dim=512,
+        n_heads=8,       
+        N=4,              
         T=8, 
         dropout=0.1, 
         max_seq_len=256
@@ -142,7 +142,7 @@ def train_hrm_model(target_epochs=1):
     )
 
     # --- Optimizer and Scheduler ---
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+    optimizer = optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
     scaler = torch.amp.GradScaler(device=device.type) # For mixed precision
     
     # Add a learning rate scheduler with warmup to stabilize training
