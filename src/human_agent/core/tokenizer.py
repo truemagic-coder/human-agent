@@ -1,87 +1,108 @@
 import re
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 class Tokenizer:
-    """Simple tokenizer for HRM model"""
+    """
+    A robust tokenizer that correctly handles special tokens and provides
+    a clean interface for encoding and decoding text for the HRM model.
+    """
     
-    def __init__(self, vocab_size: int = 50000):
+    def __init__(self, vocab_size: int = 16000):
         self.vocab_size = vocab_size
         
-        # Special tokens
-        self.special_tokens = {
+        # Core special tokens required for any model
+        self.base_special_tokens = {
             '<pad>': 0,
             '<unk>': 1,
             '<bos>': 2,
             '<eos>': 3,
-            '<function_call>': 4,
-            '<function_result>': 5,
-            '<user>': 6,
-            '<assistant>': 7,
-            '<system>': 8,
         }
         
-        # Build basic vocabulary
-        self.vocab = {token: idx for token, idx in self.special_tokens.items()}
-        self.reverse_vocab = {idx: token for token, idx in self.vocab.items()}
+        self.vocab: Dict[str, int] = {}
+        self.reverse_vocab: Dict[int, str] = {}
+        self.special_tokens_set = set()
         
-        # Add common tokens, numbers, punctuation
-        common_tokens = []
+        # Initialize with base tokens
+        self.add_special_tokens(list(self.base_special_tokens.keys()))
         
-        # Add alphabet and common words
-        for c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ':
-            common_tokens.append(c)
+        # Build the rest of the vocabulary
+        self._build_vocab()
         
-        # Add digits
-        for d in '0123456789':
-            common_tokens.append(d)
-            
-        # Add punctuation and special characters
-        punct = '.,!?;:"()[]{}=-+*/\\|`~@#$%^&_<> \n\t'
-        for p in punct:
-            common_tokens.append(p)
-            
-        # Add common words
+        self.pad_token_id = self.vocab['<pad>']
+        self.eos_token_id = self.vocab['<eos>']
+        self.bos_token_id = self.vocab['<bos>']
+        
+        # A regex to find special tokens or split by word boundaries
+        self.special_tokens_regex = None
+        self._compile_special_tokens_regex()
+
+    def _build_vocab(self):
+        """Builds a basic vocabulary from common characters and words."""
+        # Add all ASCII printable characters to ensure basic coverage
+        for i in range(32, 127):
+            self._add_token(chr(i))
+        
+        # Add common English words for better tokenization efficiency
         common_words = [
-            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-            'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have',
-            'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
-            'function', 'call', 'result', 'return', 'def', 'import', 'from', 'as',
-            'if', 'else', 'elif', 'for', 'while', 'try', 'except', 'finally',
-            'class', 'self', 'None', 'True', 'False', 'print', 'len', 'str', 'int'
+            'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'it',
+            'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this',
+            'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or',
+            'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what',
+            'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me'
         ]
-        
-        common_tokens.extend(common_words)
-        
-        # Add tokens to vocab
-        current_idx = len(self.special_tokens)
-        for token in common_tokens:
-            if token not in self.vocab and current_idx < vocab_size:
-                self.vocab[token] = current_idx
-                self.reverse_vocab[current_idx] = token
-                current_idx += 1
-                
-        self.pad_token_id = self.special_tokens['<pad>']
-        self.eos_token_id = self.special_tokens['<eos>']
-        self.bos_token_id = self.special_tokens['<bos>']
-        
+        for word in common_words:
+            self._add_token(word)
+
+    def _add_token(self, token: str):
+        """Adds a token to the vocabulary if it doesn't exist and there's space."""
+        if token not in self.vocab and len(self.vocab) < self.vocab_size:
+            idx = len(self.vocab)
+            self.vocab[token] = idx
+            self.reverse_vocab[idx] = token
+            return True
+        return False
+
+    def add_special_tokens(self, tokens: List[str]):
+        """Adds a list of special tokens to the vocabulary."""
+        for token in tokens:
+            if self._add_token(token):
+                self.special_tokens_set.add(token)
+        # Re-compile the regex to include the new tokens
+        self._compile_special_tokens_regex()
+
+    def _compile_special_tokens_regex(self):
+        """Compiles a regex to efficiently find special tokens."""
+        if self.special_tokens_set:
+            # Escape special characters for regex and join them with '|'
+            escaped_tokens = [re.escape(token) for token in sorted(list(self.special_tokens_set), key=len, reverse=True)]
+            self.special_tokens_regex = re.compile(f"({'|'.join(escaped_tokens)})")
+
     def encode(self, text: str, max_length: Optional[int] = None) -> List[int]:
-        """Encode text to token ids"""
-        # Simple word-level tokenization
+        """
+        Encodes text to a list of token IDs, correctly handling special tokens.
+        """
         tokens = []
         
-        # Split by whitespace and punctuation, keeping delimiters
-        words = re.findall(r'\w+|[^\w\s]|\s+', text)
+        # First, split the text by our special tokens pattern
+        parts = self.special_tokens_regex.split(text)
         
-        for word in words:
-            if word in self.vocab:
-                tokens.append(self.vocab[word])
+        for part in parts:
+            if not part:
+                continue
+            # If the part is a special token, encode it directly
+            if part in self.special_tokens_set:
+                tokens.append(self.vocab[part])
             else:
-                # Character-level fallback
-                for char in word:
-                    if char in self.vocab:
-                        tokens.append(self.vocab[char])
+                # Otherwise, use a simple word/character tokenization for the rest
+                # This regex splits by space, keeping punctuation attached to words
+                sub_parts = re.findall(r'\w+|[^\w\s]', part)
+                for sub_part in sub_parts:
+                    if sub_part in self.vocab:
+                        tokens.append(self.vocab[sub_part])
                     else:
-                        tokens.append(self.special_tokens['<unk>'])
+                        # Fallback to character-level for unknown words
+                        for char in sub_part:
+                            tokens.append(self.vocab.get(char, self.vocab['<unk>']))
         
         if max_length and len(tokens) > max_length:
             tokens = tokens[:max_length]
@@ -89,16 +110,17 @@ class Tokenizer:
         return tokens
     
     def decode(self, token_ids: List[int]) -> str:
-        """Decode token ids to text"""
-        tokens = []
-        for token_id in token_ids:
-            if token_id in self.reverse_vocab:
-                token = self.reverse_vocab[token_id]
-                if token not in self.special_tokens:
-                    tokens.append(token)
+        """
+        Decodes a list of token IDs back to a string.
+        This method now correctly handles all tokens, including special ones.
+        """
+        # Decode all tokens, including special ones
+        tokens = [self.reverse_vocab.get(token_id, '') for token_id in token_ids]
         
-        # Join tokens and clean up
-        text = ''.join(tokens)
-        # Basic cleanup
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
+        # Join tokens and perform basic cleanup
+        text = "".join(tokens)
+        
+        # A simple cleanup to handle spaces around punctuation, can be improved
+        text = text.replace(' .', '.').replace(' ,', ',').replace(' !', '!').replace(' ?', '?')
+        return text
+    
