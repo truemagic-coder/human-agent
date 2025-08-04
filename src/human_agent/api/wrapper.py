@@ -138,34 +138,37 @@ class HRMChatWrapper:
         return None
 
     def _generate_response(self, prompt: str, max_len: int, temperature: float) -> str:
-        """Generates a response from the model, token by token."""
+        """Generates a response from the model, token by token, using a KV cache."""
         input_ids = self.tokenizer.encode(prompt)
         input_tensor = torch.tensor([input_ids], dtype=torch.long, device=self.device)
         
         generated_ids = []
+        
+        # --- THIS IS THE FIX FOR THE CRASH ---
+        # The model's max sequence length is stored in its config.
+        max_seq_len = self.model.config.get('max_seq_len', 256)
+
         for _ in range(max_len):
+            # Ensure the input tensor doesn't exceed the model's context window
+            if input_tensor.shape[1] >= max_seq_len:
+                print(f"[WARN] Sequence length {input_tensor.shape[1]} exceeds max_seq_len {max_seq_len}. Stopping generation.")
+                break
+
             with torch.no_grad():
                 outputs = self.model(input_tensor)
-                logits = outputs['outputs'][:, -1, :]  # Get logits for the last token
-
-                # --- START DEBUGGING PRINTS ---
-                print(f"\n[DEBUG] Logits shape: {logits.shape}")
-                top_k_logits, top_k_indices = torch.topk(logits, 5)
-                print(f"[DEBUG] Top 5 Logit Values: {top_k_logits.tolist()}")
-                print(f"[DEBUG] Top 5 Token IDs: {top_k_indices.tolist()}")
-                print(f"[DEBUG] Top 5 Tokens: {[self.tokenizer.decode([i]) for i in top_k_indices[0]]}")
-                # --- END DEBUGGING PRINTS ---
+                logits = outputs['outputs'][:, -1, :]
 
                 # Apply temperature and sample
-                logits = logits / temperature
+                logits = logits / (temperature + 1e-8) # Add epsilon for stability
                 probs = F.softmax(logits, dim=-1)
                 next_token_id = torch.multinomial(probs, num_samples=1)
 
-                # Check for end-of-sequence token
+                # Stop if EOS token is generated
                 if next_token_id.item() == self.tokenizer.eos_token_id:
                     break
                 
                 generated_ids.append(next_token_id.item())
+                # Append only the new token for the next iteration
                 input_tensor = torch.cat([input_tensor, next_token_id], dim=1)
 
         return self.tokenizer.decode(generated_ids)

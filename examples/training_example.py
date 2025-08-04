@@ -125,13 +125,13 @@ def train_hrm_model(target_epochs=1):
     tokenizer.add_special_tokens(special_tokens)
     model_config = {
         'vocab_size': len(tokenizer.vocab),
-        'dim': 256,           # Smaller dimension for faster testing
-        'n_heads': 4,
-        'H_layers': 1,        # Minimum possible layers
-        'L_layers': 1,
-        'H_cycles': 1,        # Minimum possible cycles
-        'L_cycles': 1,
-        'max_seq_len': 256,
+        'dim': 512,           
+        'n_heads': 8,
+        'H_layers': 4,        
+        'L_layers': 4,
+        'H_cycles': 2,        
+        'L_cycles': 2,
+        'max_seq_len': 2048,
         'dropout': 0.1
     }
     model = create_hrm_model(**model_config).to(device)
@@ -139,7 +139,7 @@ def train_hrm_model(target_epochs=1):
     print(f"🎯 Model Size: {total_params:,} parameters ({total_params/1e9:.2f}B)")
 
     # --- Dataset and DataLoader ---
-    dataset = ReasoningDataset(tokenizer, max_length=256)
+    dataset = ReasoningDataset(tokenizer, max_length=2048)
     dataloader = DataLoader(
         dataset, batch_size=8, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True
     )
