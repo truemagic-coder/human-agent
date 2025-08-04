@@ -215,8 +215,8 @@ class HRMChatWrapper:
                     current_tensor = current_tensor[:, -512:]
                     generated_ids = generated_ids[-512:]
                 
-                result = self.model(current_tensor, training=False)
-                logits = result['final_output'][0, -1]
+                result = self.model(current_tensor)
+                logits = result['outputs'][0, -1]
                 
                 # Apply temperature and sample
                 if temperature > 0:
