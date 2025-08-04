@@ -141,7 +141,7 @@ def train_hrm_model(target_epochs=1):
     # --- Dataset and DataLoader ---
     dataset = ReasoningDataset(tokenizer, max_length=4096)
     dataloader = DataLoader(
-        dataset, batch_size=8, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True
+        dataset, batch_size=2, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True
     )
 
     # --- Optimizer and Scheduler ---
