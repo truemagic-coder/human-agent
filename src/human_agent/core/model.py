@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import math
 from typing import Dict, Any, Optional
 
+# --- Standard Building Blocks (Corrected and Verified) ---
+
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
@@ -28,12 +30,21 @@ class SwiGLU(nn.Module):
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
         super().__init__()
+        # The dimension for inv_freq should be halved because we are dealing
+        # with pairs of values for the real and imaginary parts of a complex number.
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
+        
         t = torch.arange(max_seq_len, dtype=self.inv_freq.dtype)
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-        self.register_buffer("cos_cached", torch.cos(freqs), persistent=False)
-        self.register_buffer("sin_cached", torch.sin(freqs), persistent=False)
+        
+        # --- THIS IS THE FIX ---
+        # We need to repeat the frequencies for the full head dimension to match
+        # the query and key tensors.
+        emb = torch.cat((freqs, freqs), dim=-1)
+        
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
 
     def forward(self, x, seq_len: int):
         if seq_len > self.cos_cached.shape[0]:
@@ -47,8 +58,8 @@ def apply_rotary_pos_emb(q, k, cos, sin):
         x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
     
-    cos = cos.unsqueeze(1).unsqueeze(2) # (seq_len, 1, 1, dim)
-    sin = sin.unsqueeze(1).unsqueeze(2) # (seq_len, 1, 1, dim)
+    cos = cos.unsqueeze(1).unsqueeze(2)
+    sin = sin.unsqueeze(1).unsqueeze(2)
     
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
@@ -111,7 +122,6 @@ class HierarchicalReasoningModel(nn.Module):
     ):
         super().__init__()
         
-        # Store config directly in the model
         self.config = {
             "vocab_size": vocab_size, "dim": dim, "n_heads": n_heads,
             "N": N, "max_seq_len": max_seq_len, "dropout": dropout,
@@ -126,7 +136,6 @@ class HierarchicalReasoningModel(nn.Module):
         
         self.rotary_emb = RotaryEmbedding(dim // n_heads, max_seq_len, base=rope_theta)
         
-        # Pre-compute the causal mask
         mask = torch.full((1, 1, max_seq_len, max_seq_len), float("-inf"))
         mask = torch.triu(mask, diagonal=1)
         self.register_buffer("mask", mask)
@@ -136,7 +145,6 @@ class HierarchicalReasoningModel(nn.Module):
     def _init_weights(self):
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                # Use standard, correct initialization
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
@@ -150,7 +158,6 @@ class HierarchicalReasoningModel(nn.Module):
         
         cos, sin = self.rotary_emb(h, seqlen)
         
-        # Apply all transformer blocks
         for layer in self.layers:
             h = layer(h, cos, sin, self.mask[:, :, :seqlen, :seqlen])
             
