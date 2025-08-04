@@ -5,7 +5,7 @@ from human_agent.core.model import create_hrm_model
 from human_agent.api.wrapper import HRMChatWrapper
 from human_agent.functions.registry import FunctionRegistry
 from human_agent.functions.builtin import register_builtin_functions
-from human_agent.api.schemas import ChatCompletionRequest, ChatCompletionResponse
+from human_agent.api.schemas import ChatCompletionRequest
 
 def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     """Load the trained HRM model with correct dimensions"""
