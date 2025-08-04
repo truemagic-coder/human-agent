@@ -1,7 +1,7 @@
 import torch
 import json
 import re
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional
 from ..core.model import HierarchicalReasoningModel
 from ..core.tokenizer import Tokenizer
 from ..functions.registry import FunctionRegistry
