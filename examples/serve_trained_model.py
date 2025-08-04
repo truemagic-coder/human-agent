@@ -16,7 +16,7 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     print(f"🧠 Loading trained model from '{checkpoint_path}'...")
     
     try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     except FileNotFoundError:
         print(f"❌ ERROR: Model checkpoint not found at '{checkpoint_path}'.")
         print("   Please run training first using 'training_example.py'.")
