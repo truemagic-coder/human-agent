@@ -46,17 +46,23 @@ class HRMChatWrapper:
             
             # Handle function call messages
             if role == "assistant" and function_call:
+                func_name = None
+                func_args = ''
                 if hasattr(function_call, 'name'):
                     func_name = function_call.name
                     func_args = function_call.arguments
-                else:
-                    func_name = function_call['name']
-                    func_args = function_call['arguments']
-                formatted += f"<assistant><function_call>{func_name}({func_args})</function_call></assistant>"
+                # Check if it's a dictionary and safely get 'name'
+                elif isinstance(function_call, dict):
+                    func_name = function_call.get('name')
+                    func_args = function_call.get('arguments', '')
+
+                if func_name:
+                    formatted += f"<assistant><function_call>{func_name}({func_args})</function_call></assistant>"
             elif role == "function":
                 formatted += f"<function_result>{content}</function_result>"
             else:
-                formatted += f"<{role}>{content}</{role}>"
+                if content:
+                    formatted += f"<{role}>{content}</{role}>"
         return formatted
 
     def _parse_function_call(self, text: str) -> Optional[Dict[str, Any]]:
