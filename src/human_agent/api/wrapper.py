@@ -208,7 +208,7 @@ class HRMChatWrapper:
         else:
             # Model generated a text response
             response_text = generated_text.replace("<assistant>", "").strip()
-            if not response_text or len(response_text) < 5:
+            if not response_text:
                 response_text = "I'm not sure how to answer that. I can help with calculations, weather, and time. What would you like to know?"
             
             choice = {
