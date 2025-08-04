@@ -90,10 +90,20 @@ def root():
     """Root endpoint with model information."""
     params = model_config.get('total_params', 0)
     size_b = params / 1_000_000_000
+    
+    # --- THIS IS THE FIX ---
+    # The raw `model_config` dictionary contains non-serializable types,
+    # which causes a RecursionError in FastAPI's JSON encoder.
+    # We create a new, "safe" dictionary with only simple data types.
+    safe_config = {
+        k: v for k, v in model_config.items() 
+        if isinstance(v, (str, int, float, bool, type(None)))
+    }
+
     return {
         "message": "HRM API Server is online.",
         "model": f"hrm-{size_b:.1f}b",
-        "model_info": model_config
+        "model_info": safe_config
     }
 
 @app.post("/v1/chat/completions")
