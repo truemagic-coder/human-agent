@@ -150,9 +150,12 @@ def train_hrm_model(target_epochs=1):
     num_warmup_steps = int(0.1 * num_training_steps)  # 10% of steps are for warmup
 
     def lr_lambda(current_step):
+        # FIX 2: Add a linear decay after the warmup period for better convergence.
         if current_step < num_warmup_steps:
             return float(current_step) / float(max(1, num_warmup_steps))
-        return 1.0
+        return max(
+            0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps))
+        )
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
