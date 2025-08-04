@@ -158,7 +158,7 @@ def train_hrm_model(target_epochs=1):
             optimizer.zero_grad()
             
             # Use Automatic Mixed Precision (AMP)
-            with torch.amp.autocast(device_type=device):
+            with torch.amp.autocast(device_type=device.type):
                 result = model(input_ids)
                 logits = result['outputs']
                 
