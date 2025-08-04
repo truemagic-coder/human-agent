@@ -123,15 +123,18 @@ def train_hrm_model(target_epochs=1):
         "<function_call>", "</function_call>", "<function_result>", "</function_result>"
     ]
     tokenizer.add_special_tokens(special_tokens)
-    model = create_hrm_model(
-        vocab_size=len(tokenizer.vocab),
-        dim=512,
-        n_heads=8,       
-        N=4,              
-        T=8, 
-        dropout=0.1, 
-        max_seq_len=256
-    ).to(device)
+    model_config = {
+        'vocab_size': len(tokenizer.vocab),
+        'dim': 256,           # Smaller dimension for faster testing
+        'n_heads': 4,
+        'H_layers': 1,        # Minimum possible layers
+        'L_layers': 1,
+        'H_cycles': 1,        # Minimum possible cycles
+        'L_cycles': 1,
+        'max_seq_len': 256,
+        'dropout': 0.1
+    }
+    model = create_hrm_model(**model_config).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"🎯 Model Size: {total_params:,} parameters ({total_params/1e9:.2f}B)")
 
