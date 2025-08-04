@@ -143,7 +143,7 @@ def train_hrm_model(target_epochs=1):
 
     # --- Optimizer and Scheduler ---
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    scaler = torch.cuda.amp.GradScaler() # For mixed precision
+    scaler = torch.amp.GradScaler(device=device.type) # For mixed precision
     
     # Add a learning rate scheduler with warmup to stabilize training
     num_training_steps = target_epochs * len(dataloader)
