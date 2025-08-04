@@ -248,21 +248,5 @@ class HierarchicalReasoningModel(nn.Module):
         return loss
 
 def create_hrm_model(vocab_size: int, **kwargs) -> HierarchicalReasoningModel:
-    """Factory function to create HRM model with sensible defaults"""
-    default_config = {
-        'dim': 512,
-        'n_heads': 8,
-        'max_seq_len': 1024,
-        'N': 4,
-        'T': 8,
-        'dropout': 0.1,
-        'H_layers': 2,
-        'L_layers': 2,
-        'expansion': 2.0,
-        'eps': 1e-5,
-        'rope_theta': 10000.0,
-    }
-    
-    # Override defaults with provided kwargs
-    config = {**default_config, **kwargs}
+    config = {**kwargs}
     return HierarchicalReasoningModel(vocab_size, **config)
