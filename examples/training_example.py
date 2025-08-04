@@ -118,6 +118,11 @@ def train_hrm_model(target_epochs=1):
     
     # --- Model and Tokenizer ---
     tokenizer = Tokenizer(vocab_size=16000)
+    special_tokens = [
+        "<user>", "</user>", "<assistant>", "</assistant>", 
+        "<function_call>", "</function_call>", "<function_result>", "</function_result>"
+    ]
+    tokenizer.add_special_tokens(special_tokens)
     model = create_hrm_model(
         vocab_size=len(tokenizer.vocab),
         dim=2048, n_heads=32, N=4, T=8, dropout=0.1, max_seq_len=256
