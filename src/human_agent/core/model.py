@@ -46,6 +46,9 @@ class RotaryEmbedding(nn.Module):
         cos = self.cos_cached[:seq_len]
         sin = self.sin_cached[:seq_len]
         
+        cos = torch.cat((cos, cos), dim=-1)
+        sin = torch.cat((sin, sin), dim=-1)
+        
         def rotate_half(x):
             x1, x2 = x[..., ::2], x[..., 1::2]
             return torch.cat((-x2, x1), dim=-1)
