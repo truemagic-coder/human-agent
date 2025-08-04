@@ -8,509 +8,205 @@ import datetime
 import argparse
 from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset
+from torch.cuda.amp import GradScaler, autocast
 from human_agent.core.model import create_hrm_model
 from human_agent.core.tokenizer import Tokenizer
 
 def clear_gpu_memory():
-    """Aggressively clear GPU memory"""
+    """Clear GPU memory."""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()
     gc.collect()
 
-class OptimizedReasoningDataset(Dataset):
-    """Optimized dataset for 10-hour training budget"""
-    
-    def __init__(self, tokenizer: Tokenizer, max_length: int = 128):
+class ReasoningDataset(Dataset):
+    """
+    A more robust dataset focusing on quality and standard instruction formats.
+    The model learns to predict the `output` given the `input`.
+    """
+    def __init__(self, tokenizer: Tokenizer, max_length: int = 256):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.examples = []
         
-        print("Creating optimized dataset for training...")
-        self._prepare_focused_dataset()
+        print("🧠 Creating improved dataset for training...")
+        self._prepare_dataset()
         
         random.shuffle(self.examples)
-        print(f"Created {len(self.examples)} total training examples")
+        print(f"✅ Created {len(self.examples)} high-quality training examples.")
 
-    def _prepare_focused_dataset(self):
-        """Prepare focused dataset - quality over quantity"""
-        
-        # ADD CONVERSATIONAL TRAINING DATA FIRST - ORCA-STYLE
+    def _prepare_dataset(self):
+        # Conversational examples
         conversational_examples = [
-            # Basic greetings and identity
-            ("Hello", "Hello! I'm an AI assistant that can help with calculations, weather information, and time queries. How can I assist you today?"),
-            ("Hi there", "Hi! I'm here to help with mathematical calculations, weather data, and time information. What would you like to know?"),
-            ("Hey", "Hey! I can help you with math problems, weather forecasts, and current time. What do you need?"),
-            ("Good morning", "Good morning! I'm ready to assist with calculations, weather information, and time queries. How can I help?"),
-            ("Good afternoon", "Good afternoon! I can help with mathematical calculations, weather data, and time information. What would you like to know?"),
-            
-            # Identity questions
-            ("What's your name?", "I'm an AI assistant designed to help with mathematical calculations, weather information, and time-related queries."),
-            ("Who are you?", "I'm a hierarchical reasoning model trained to assist with calculations, weather data, and time information."),
-            ("Tell me about yourself", "I'm an AI assistant specialized in mathematical calculations, weather information, and time queries. I can perform complex calculations, check weather conditions worldwide, and provide current time data."),
-            ("What can you do?", "I can perform mathematical calculations, check weather information for any location, and provide current time data. I'm particularly good at solving math problems and answering information queries."),
-            ("What are your capabilities?", "My main capabilities include mathematical calculations (arithmetic, percentages, exponents), weather information retrieval, and time queries. I can help solve problems and provide accurate information."),
-            
-            # Gratitude responses
-            ("Thank you", "You're welcome! I'm happy to help with any calculations, weather information, or time queries you need."),
-            ("Thanks", "My pleasure! Feel free to ask about math problems, weather conditions, or time information anytime."),
-            ("Thank you so much", "You're very welcome! I'm here whenever you need help with calculations, weather data, or time queries."),
-            ("I appreciate your help", "I'm glad I could help! Don't hesitate to ask if you need assistance with math, weather, or time information."),
-            
-            # Farewells
-            ("Goodbye", "Goodbye! Feel free to return anytime you need help with calculations, weather information, or time queries."),
-            ("Bye", "See you later! I'm here whenever you need assistance with math problems, weather data, or time information."),
-            ("See you later", "See you later! Come back anytime you need help with calculations, weather forecasts, or time queries."),
-            ("Have a good day", "Thank you, have a wonderful day! Remember, I'm here for any math, weather, or time questions you might have."),
-            
-            # Help requests
-            ("Help", "I'm here to help! I can assist with mathematical calculations, weather information, and time queries. What would you like to know?"),
-            ("I need help", "I'm ready to assist! I can help with math problems, weather conditions, and time information. What do you need help with?"),
-            ("Can you help me?", "Absolutely! I can help with calculations, weather data, and time queries. What would you like assistance with?"),
-            
-            # Conversational responses
-            ("How are you?", "I'm functioning well and ready to help with calculations, weather information, and time queries! How can I assist you today?"),
-            ("What's up?", "I'm here and ready to help with mathematical calculations, weather data, and time information! What would you like to know?"),
-            ("How's it going?", "Going great! I'm ready to assist with math problems, weather conditions, and time queries. What can I help you with?"),
-            
-            # Task-specific introductions
-            ("I need to do some math", "Perfect! I'm excellent at mathematical calculations. I can help with arithmetic, percentages, exponents, and complex expressions. What calculation do you need?"),
-            ("I want to check the weather", "I can help with weather information! I can check current conditions, temperature, and weather status for any location worldwide. Which city would you like me to check?"),
-            ("What time is it?", "I can provide current time information! Let me get that for you."),
-            ("I need some calculations done", "Excellent! I'm specialized in mathematical calculations. I can handle arithmetic, percentages, exponents, and complex expressions. What would you like me to calculate?"),
+            ("Hello", "Hello! I am an AI assistant. How can I help you today?"),
+            ("What is your name?", "I am a helpful AI assistant trained to follow instructions."),
+            ("What can you do?", "I can assist with tasks like mathematical calculations, and answering questions based on provided context."),
+            ("Thank you", "You're welcome!"),
+            ("How are you?", "I am a machine learning model, but I'm ready to help!"),
         ]
-        
-        # ADD LOTS OF CONVERSATIONAL EXAMPLES
-        for question, answer in conversational_examples:
-            for _ in range(1000):  # Lots of repetition for conversation
-                example = {
-                    "input": f"<user>{question}</user>",
-                    "output": f"<assistant>{answer}</assistant>",
-                    "type": "conversation"
-                }
-                self.examples.append(example)
-        
-        # CRITICAL FIXES - Focused repetition
-        critical_fixes = [
-            # Exponentiation fixes
-            ("What is 2^8?", "2 ** 8", 256),
-            ("Calculate 2^8", "2 ** 8", 256),
-            ("What's 2 to the power of 8?", "2 ** 8", 256),
-            ("What is 3^4?", "3 ** 4", 81),
-            ("Calculate 3^4", "3 ** 4", 81),
-            ("What's 4^3?", "4 ** 3", 64),
-            ("What is 5^2?", "5 ** 2", 25),
-            
-            # Parentheses fixes
-            ("Calculate (5 + 3) * 4", "(5 + 3) * 4", 32),
-            ("What is (5 + 3) * 4?", "(5 + 3) * 4", 32),
-            ("What's (10 + 5) * 2?", "(10 + 5) * 2", 30),
-            ("Calculate (8 - 3) * 6", "(8 - 3) * 6", 30),
-            
-            # Percentage fixes
-            ("What's 15% of 200?", "(15 / 100) * 200", 30.0),
-            ("Calculate 15% of 200", "(15 / 100) * 200", 30.0),
-            ("What's 25% of 80?", "(25 / 100) * 80", 20.0),
-            ("What's 10% of 150?", "(10 / 100) * 150", 15.0),
+        for q, a in conversational_examples:
+            self.examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
+
+        # Mathematical function calling
+        math_examples = [
+            ("What is 2^8?", "calculate(expression='2**8')"),
+            ("Calculate (5 + 3) * 4", "calculate(expression='(5 + 3) * 4')"),
+            ("What's 15% of 200?", "calculate(expression='(15/100)*200')"),
         ]
-        
-        # Moderate repetition for time efficiency
-        for question, expression, result in critical_fixes:
-            for _ in range(500):  # Reduced from 2000 to 500
-                example = {
-                    "input": f"<user>{question}</user>",
-                    "output": f"<assistant><function_call>calculate(expression=\"{expression}\")</function_call></assistant><function_result>{result}</function_result><assistant>The answer is {result}.</assistant>",
-                    "type": "critical_fix"
-                }
-                self.examples.append(example)
-        
-        # Weather patterns - INCLUDE CONVERSATIONAL RESPONSES
-        weather_patterns = [
-            ("Is it raining in Paris?", "get_weather", "Paris", "Let me check the weather in Paris for you."),
-            ("Is it sunny in Tokyo?", "get_weather", "Tokyo", "I'll check Tokyo's weather conditions."), 
-            ("Temperature in Sydney?", "get_weather", "Sydney", "Let me get the current temperature in Sydney."),
-            ("What's the weather in London?", "get_weather", "London", "I'll check London's current weather."),
-            ("How's the weather in New York?", "get_weather", "New York", "Let me see what the weather is like in New York."),
+        for instruction, call in math_examples:
+            self.examples.append({"input": f"<user>{instruction}</user>", "output": f"<assistant><function_call>{call}</function_call></assistant>"})
+
+        # Weather function calling
+        weather_examples = [
+            ("What's the weather in London?", "get_weather(location='London')"),
+            ("Is it raining in Paris?", "get_weather(location='Paris')"),
+            ("Temperature in Sydney?", "get_weather(location='Sydney')"),
         ]
+        for instruction, call in weather_examples:
+            self.examples.append({"input": f"<user>{instruction}</user>", "output": f"<assistant><function_call>{call}</function_call></assistant>"})
         
-        for question, function, city, response in weather_patterns:
-            for _ in range(200):  # Reduced from 1000
-                example = {
-                    "input": f"<user>{question}</user>",
-                    "output": f"<assistant><function_call>{function}(location=\"{city}\")</function_call></assistant><function_result>The weather in {city} is sunny with a temperature of 22°C</function_result><assistant>{response} The weather in {city} is sunny with a temperature of 22°C.</assistant>",
-                    "type": "weather_pattern_fix"
-                }
-                self.examples.append(example)
-        
-        print(f"Total examples: {len(self.examples)}")
-        print(f"   Conversation: {len([e for e in self.examples if e['type'] == 'conversation'])}")
-        print(f"   Math: {len([e for e in self.examples if e['type'] == 'critical_fix'])}")
-        print(f"   Weather: {len([e for e in self.examples if e['type'] == 'weather_pattern_fix'])}")
+        # Time function calling
+        time_examples = [
+            ("What time is it?", "get_current_time()"),
+            ("What is today's date?", "get_current_time()"),
+        ]
+        for instruction, call in time_examples:
+             self.examples.append({"input": f"<user>{instruction}</user>", "output": f"<assistant><function_call>{call}</function_call></assistant>"})
+
+        # Augment data by repeating high-quality examples
+        self.examples = self.examples * 500 # Repeat the core set to create a larger dataset
 
     def __len__(self):
         return len(self.examples)
     
     def __getitem__(self, idx):
         example = self.examples[idx]
+        input_text = example["input"]
+        output_text = example["output"]
+
+        input_tokens = self.tokenizer.encode(input_text)
+        output_tokens = self.tokenizer.encode(output_text)
+
+        # Combine and pad/truncate
+        tokens = input_tokens + output_tokens
+        tokens = tokens[:self.max_length-1] + [self.tokenizer.eos_token_id]
         
-        full_text = example["input"] + example["output"]
-        tokens = self.tokenizer.encode(full_text, max_length=self.max_length)
+        # Create labels and mask out the input part
+        labels = [-100] * len(input_tokens) + output_tokens
+        labels = labels[:self.max_length-1] + [self.tokenizer.eos_token_id]
         
-        if len(tokens) < self.max_length:
-            tokens.extend([self.tokenizer.pad_token_id] * (self.max_length - len(tokens)))
-        
-        input_ids = torch.tensor(tokens[:-1])
-        target_ids = torch.tensor(tokens[1:])
-        
+        # Pad to max_length
+        pad_len = self.max_length - len(tokens)
+        tokens.extend([self.tokenizer.pad_token_id] * pad_len)
+        labels.extend([-100] * pad_len)
+
         return {
-            "input_ids": input_ids,
-            "target_ids": target_ids,
-            "type": example["type"]
+            "input_ids": torch.tensor(tokens, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long)
         }
 
 def collate_fn(batch):
-    """Collate function for DataLoader"""
+    """Collate function for DataLoader."""
     input_ids = torch.stack([item["input_ids"] for item in batch])
-    target_ids = torch.stack([item["target_ids"] for item in batch])
-    types = [item["type"] for item in batch]
-    
-    return {
-        "input_ids": input_ids,
-        "target_ids": target_ids,
-        "types": types
-    }
+    labels = torch.stack([item["labels"] for item in batch])
+    return {"input_ids": input_ids, "labels": labels}
 
 def format_time(seconds):
-    """Format seconds into readable time"""
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    elif seconds < 3600:
-        return f"{seconds//60:.0f}m {seconds%60:.0f}s"
-    else:
-        return f"{seconds//3600:.0f}h {(seconds%3600)//60:.0f}m"
+    """Format seconds into readable time."""
+    return str(datetime.timedelta(seconds=int(seconds)))
 
 def train_hrm_model(target_epochs=1):
-    """Train an HRM model for a specified number of epochs"""
+    """Train an HRM model with improved stability and best practices."""
     start_time = time.time()
     
-    # Set optimal environment
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    # --- Setup ---
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🚀 Using device: {device}")
     
-    clear_gpu_memory()
-    
-    # CUDA setup
-    device = torch.device("cuda:0")
-    torch.cuda.set_per_process_memory_fraction(0.8)
-    print("🚀 Using H200 with 80% memory allocation")
-    
-    print("\n🧠 Creating LARGE model for training...")
-    
-    tokenizer = Tokenizer(vocab_size=16000)  # Larger vocab
-    
+    # --- Model and Tokenizer ---
+    tokenizer = Tokenizer(vocab_size=16000)
     model = create_hrm_model(
         vocab_size=len(tokenizer.vocab),
-        dim=2048,
-        n_heads=64,
-        N=4,
-        T=8,
-        dropout=0.1
-    )
-    
-    model = model.to(device)
+        dim=2048, n_heads=32, N=4, T=8, dropout=0.1, max_seq_len=256
+    ).to(device)
     total_params = sum(p.numel() for p in model.parameters())
-    
-    print(f"🎯 MODEL SIZE: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
-    
-    dataset = OptimizedReasoningDataset(tokenizer, max_length=128)
-    
-    batch_size = 4
+    print(f"🎯 Model Size: {total_params:,} parameters ({total_params/1e9:.2f}B)")
+
+    # --- Dataset and DataLoader ---
+    dataset = ReasoningDataset(tokenizer, max_length=256)
     dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=collate_fn,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True
+        dataset, batch_size=8, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True
     )
+
+    # --- Optimizer and Scheduler ---
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+    scaler = GradScaler() # For mixed precision
     
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=5e-4,
-        weight_decay=0.01,
-        betas=(0.9, 0.95),
-        eps=1e-8
-    )
-    
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=target_epochs, eta_min=1e-7
-    )
-    
+    # --- Training Loop ---
     print(f"\n🚀 Starting model training for {target_epochs} epochs...")
     model.train()
     best_loss = float('inf')
     
-    def init_weights(m):
-        if isinstance(m, torch.nn.Linear):
-            torch.nn.init.xavier_uniform_(m.weight, gain=0.5)
-            if m.bias is not None:
-                torch.nn.init.zeros_(m.bias)
-        elif isinstance(m, torch.nn.Embedding):
-            torch.nn.init.normal_(m.weight, std=0.05)
-    
-    model.apply(init_weights)
-    print("Applied aggressive initialization for large model")
-    
     for epoch in range(target_epochs):
         epoch_start_time = time.time()
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{target_epochs}")
         
-        print(f"\n{'='*80}")
-        print(f"Epoch {epoch+1}/{target_epochs}")
-        
-        epoch_loss = 0
-        epoch_steps = 0
-        successful_steps = 0
-        
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}", 
-                   ncols=100, leave=False)
-        
-        for batch_idx, batch in enumerate(pbar):
-            if batch_idx % 5 == 0:
-                clear_gpu_memory()
-            
-            input_ids = batch["input_ids"].to(device, non_blocking=True)
-            target_ids = batch["target_ids"].to(device, non_blocking=True)
+        for batch in pbar:
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
             
             optimizer.zero_grad()
             
-            try:
-                result = model(
-                    input_ids,
+            # Use Automatic Mixed Precision (AMP)
+            with autocast():
+                result = model(input_ids)
+                logits = result['outputs']
+                
+                # Calculate loss directly, labels already prepared with ignore_index=-100
+                loss = torch.nn.functional.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    labels.view(-1)
                 )
-                
-                if result is None:
-                    print("⚠️ Model returned None for this batch")
-                    dummy_loss = torch.tensor(1.0, requires_grad=True, device=device)
-                    try:
-                        dummy_loss.backward()
-                        optimizer.step()
-                        epoch_loss += 1.0
-                        epoch_steps += 1
-                    except Exception:
-                        pass
-                    continue
-                
-                if 'outputs' not in result:
-                    print(f"⚠️ Model result missing 'outputs': {result}")
-                    dummy_loss = torch.tensor(1.0, requires_grad=True, device=device)
-                    try:
-                        dummy_loss.backward()
-                        optimizer.step()
-                        epoch_loss += 1.0
-                        epoch_steps += 1
-                    except Exception:
-                        pass
-                    continue
-                
-                outputs = result['outputs']
-                
-                try:
-                    loss = model.compute_loss(outputs, target_ids, result.get('q_values'))
-                except Exception:
-                    try:
-                        if len(outputs.shape) == 3:
-                            batch_size, _, vocab_size = outputs.shape
-                            outputs_flat = outputs.view(-1, vocab_size)
-                            targets_flat = target_ids.view(-1)
-                            loss = torch.nn.functional.cross_entropy(
-                                outputs_flat, targets_flat, ignore_index=tokenizer.pad_token_id
-                            )
-                        else:
-                            loss = torch.tensor(5.0, requires_grad=True, device=device)
-                    except Exception:
-                        loss = torch.tensor(0.1, requires_grad=True, device=device)
-                
-                if torch.isnan(loss):
-                    print("⚠️ Loss is NaN, replacing with 1.0")
-                    loss = torch.tensor(1.0, requires_grad=True, device=device)
-                if torch.isinf(loss):
-                    print("⚠️ Loss is Inf, replacing with 1.0")
-                    loss = torch.tensor(1.0, requires_grad=True, device=device)
-                    
-                loss_value = loss.item()
-                if loss_value > 1000000:
-                    print(f"⚠️ Loss value too high ({loss_value}), replacing with 1000.0")
-                    loss = torch.tensor(1000.0, requires_grad=True, device=device)
-                    loss_value = 1000.0
-                
-                try:
-                    loss.backward()
-                except Exception as backward_error:
-                    print(f"⚠️ Backward failed: {backward_error}")
-                    optimizer.zero_grad()
-                    try:
-                        simple_loss = torch.tensor(1.0, requires_grad=True, device=device)
-                        simple_loss.backward()
-                    except Exception:
-                        continue
-                
-                try:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100000.0)
-                except Exception:
-                    grad_norm = 0.0
-                
-                try:
-                    optimizer.step()
-                    is_real_loss = loss_value not in [1.0, 5.0, 0.1, 1000.0, 999.0] and not torch.isnan(loss) and not torch.isinf(loss)
-                    if is_real_loss:
-                        successful_steps += 1
-                    epoch_loss += loss_value
-                    epoch_steps += 1
-                    
-                    success_rate = 100 * successful_steps / (batch_idx + 1)
-                    
-                    pbar.set_postfix({
-                        'Loss': f'{loss_value:.2f}',
-                        'Success': f'{success_rate:.1f}%',
-                        'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
-                        'Steps': f'{successful_steps}',
-                        'GradNorm': f'{grad_norm:.1f}'
-                    })
-                    
-                except Exception as optimizer_error:
-                    print(f"⚠️ Optimizer step failed: {optimizer_error}")
-                    epoch_loss += loss_value if 'loss_value' in locals() else 1.0
-                    epoch_steps += 1
-                    
-                    pbar.set_postfix({
-                        'Loss': f'{loss_value if "loss_value" in locals() else 1.0:.2f}',
-                        'Success': f'{100 * successful_steps / (batch_idx + 1):.1f}%',
-                        'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
-                        'Steps': f'{successful_steps}',
-                        'Status': 'Force'
-                    })
-                
-            except Exception as e:
-                print(f"⚠️ Exception in training loop: {e}")
-                try:
-                    dummy_loss = torch.tensor(0.1, requires_grad=True, device=device)
-                    dummy_loss.backward()
-                    optimizer.step()
-                    epoch_loss += 0.1
-                    epoch_steps += 1
-                    
-                    pbar.set_postfix({
-                        'Loss': '0.10',
-                        'Success': f'{100 * successful_steps / (batch_idx + 1):.1f}%',
-                        'GPU': f'{torch.cuda.memory_allocated() / 1e9:.1f}GB',
-                        'Steps': f'{successful_steps}',
-                        'Status': 'Dummy'
-                    })
-                except Exception as dummy_error:
-                    print(f"⚠️ Dummy loss failed: {dummy_error}")
-                    epoch_loss += 1.0
-                    epoch_steps += 1
-                
-                if "out of memory" in str(e):
-                    clear_gpu_memory()
-        
-        pbar.close()
-        
-        epoch_time = time.time() - epoch_start_time
-        avg_loss = epoch_loss / epoch_steps if epoch_steps > 0 else float('inf')
-        success_rate = 100 * successful_steps / len(dataloader) if len(dataloader) > 0 else 0
-        
-        print(f"\n📊 Epoch {epoch+1} Summary:")
-        print(f"   Average Loss: {avg_loss:.4f}")
-        print(f"   Success Rate: {success_rate:.1f}%")
-        print(f"   Successful Steps: {successful_steps}/{len(dataloader)}")
-        print(f"   Epoch Time: {format_time(epoch_time)}")
-        print(f"   Batches/sec: {len(dataloader)/epoch_time:.2f}")
-        print(f"   GPU Memory: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
-        
-        if epoch_steps > 0:
-            if avg_loss < best_loss or best_loss == float('inf'):
-                best_loss = avg_loss
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': avg_loss,
-                    'tokenizer': tokenizer,
-                    'config': {
-                        'vocab_size': len(tokenizer.vocab),
-                        'dim': 2048 if total_params < 1_000_000_000 else 2560,
-                        'n_heads': 32 if total_params < 1_000_000_000 else 40,
-                        'N': 4 if total_params < 1_000_000_000 else 5,
-                        'T': 8 if total_params < 1_000_000_000 else 10,
-                        'total_params': total_params
-                    },
-                    'training_time': time.time() - start_time,
-                    'success_rate': success_rate,
-                    'epoch_steps': epoch_steps
-                }, 'hrm_trained_model.pt')
-                print(f"🎯 Saved model! Loss: {avg_loss:.4f}, Success: {success_rate:.1f}%, Steps: {epoch_steps}")
-        else:
-            print("🔧 No successful steps, but saving model anyway...")
+
+            if torch.isnan(loss):
+                print("⚠️ NaN loss detected, skipping step.")
+                continue
+
+            # Scale loss and backpropagate
+            scaler.scale(loss).backward()
+            
+            # Unscale gradients and clip
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            # Optimizer step
+            scaler.step(optimizer)
+            scaler.update()
+            
+            pbar.set_postfix({'Loss': f'{loss.item():.4f}', 'LR': f'{optimizer.param_groups[0]["lr"]:.2e}'})
+
+        # --- End of Epoch ---
+        avg_loss = sum(pbar.iterable.last_loss for pbar in [pbar] if hasattr(pbar.iterable, 'last_loss')) / len(dataloader)
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            print(f"🎯 New best loss: {best_loss:.4f}. Saving model...")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': 999.0,
                 'tokenizer': tokenizer,
-                'config': {
-                    'vocab_size': len(tokenizer.vocab),
-                    'dim': 2048 if total_params < 1_000_000_000 else 2560,
-                    'n_heads': 32 if total_params < 1_000_000_000 else 40,
-                    'N': 4 if total_params < 1_000_000_000 else 5,
-                    'T': 8 if total_params < 1_000_000_000 else 10,
-                    'total_params': total_params
-                },
-                'training_time': time.time() - start_time,
-                'success_rate': 0.0,
-                'epoch_steps': 0
+                'config': model.config, # Save model config directly
             }, 'hrm_trained_model.pt')
-            print(f"🎯 Force saved model anyway!")
-        
-        try:
-            scheduler.step()
-        except Exception:
-            pass
-        
-        print(f"✅ Epoch completed with {successful_steps} steps, continuing...")
-        
-        if successful_steps > 0:
-            scheduler.step()
-        
-        if success_rate < 0.5:
-            print(f"⚠️  Success rate very low ({success_rate:.1f}%), but continuing...")
-        
-        torch.cuda.reset_peak_memory_stats()
-        clear_gpu_memory()
-    
-    total_training_time = time.time() - start_time
-    finish_time = datetime.datetime.now()
-    
-    print(f"\n🎉 TRAINING COMPLETED!")
-    print(f"📊 Final Results:")
-    print(f"   Best Loss: {best_loss:.4f}")
-    print(f"   Model: {total_params:,} parameters ({total_params/1_000_000_000:.2f}B)")
-    print(f"   Training Time: {format_time(total_training_time)}")
-    print(f"   Finished: {finish_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"💾 Model saved: hrm_trained_model.pt")
-    
-    if best_loss == float('inf'):
-        print("\n⚠️  WARNING: No successful training steps achieved!")
-        print("🔍 This suggests the model architecture needs fundamental changes")
-        print("💡 Consider:")
-        print("   - Even smaller learning rates (1e-5)")
-        print("   - Simpler model architecture")
-        print("   - Different initialization strategies")
-        print("   - Debugging the forward pass")
+
+        print(f"\n📊 Epoch {epoch+1} Summary:")
+        print(f"   Average Loss: {avg_loss:.4f}")
+        print(f"   Epoch Time: {format_time(time.time() - epoch_start_time)}")
+
+    print(f"\n🎉 TRAINING COMPLETED! Total time: {format_time(time.time() - start_time)}")
+    print(f"💾 Best model saved to hrm_trained_model.pt with loss: {best_loss:.4f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train HRM model")
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to train")
     args = parser.parse_args()
     train_hrm_model(target_epochs=args.epochs)
+    
