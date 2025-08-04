@@ -136,45 +136,38 @@ class HRMChatWrapper:
             
         return None
 
-    def _generate_response(self, prompt: str, max_tokens: int, temperature: float) -> str:
-        """Generate a response from the model."""
-        stop_tokens = ["</assistant>", "<user>", "<function_result>"]
-        input_ids = self.tokenizer.encode(prompt[-1024:])  # Limit context window
-        generated_ids = list(input_ids)
+    def _generate_response(self, prompt: str, max_len: int, temperature: float) -> str:
+        """Generates a response from the model, token by token."""
+        input_ids = self.tokenizer.encode(prompt)
+        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=self.device)
         
-        with torch.no_grad():
-            for _ in range(max_tokens):
-                current_tensor = torch.tensor([generated_ids], device=self.device)
-                
-                result = self.model(current_tensor)
-                logits = result['outputs'][0, -1]
-                
-                if temperature > 0:
-                    probs = torch.softmax(logits / temperature, dim=-1)
-                    next_token = torch.multinomial(probs, 1).item()
-                else:
-                    next_token = logits.argmax().item()
-                
-                if next_token == self.tokenizer.eos_token_id:
+        generated_ids = []
+        for _ in range(max_len):
+            with torch.no_grad():
+                outputs = self.model(input_tensor)
+                logits = outputs['outputs'][:, -1, :]  # Get logits for the last token
+
+                # --- START DEBUGGING PRINTS ---
+                print(f"\n[DEBUG] Logits shape: {logits.shape}")
+                top_k_logits, top_k_indices = torch.topk(logits, 5)
+                print(f"[DEBUG] Top 5 Logit Values: {top_k_logits.tolist()}")
+                print(f"[DEBUG] Top 5 Token IDs: {top_k_indices.tolist()}")
+                print(f"[DEBUG] Top 5 Tokens: {[self.tokenizer.decode([i]) for i in top_k_indices[0]]}")
+                # --- END DEBUGGING PRINTS ---
+
+                # Apply temperature and sample
+                logits = logits / temperature
+                probs = F.softmax(logits, dim=-1)
+                next_token_id = torch.multinomial(probs, num_samples=1)
+
+                # Check for end-of-sequence token
+                if next_token_id.item() == self.tokenizer.eos_token_id:
                     break
                 
-                generated_ids.append(next_token)
-                
-                # Check for stop tokens in the generated text
-                current_text = self.tokenizer.decode(generated_ids)
-                if any(stop in current_text for stop in stop_tokens):
-                    break
-        
-        # FIX: Extract only the newly generated tokens, not by character slicing
-        new_token_ids = generated_ids[len(input_ids):]
-        response = self.tokenizer.decode(new_token_ids)
-        
-        # Clean up stop tokens
-        for stop in stop_tokens:
-            if stop in response:
-                response = response.split(stop)[0]
-        
-        return response.strip()
+                generated_ids.append(next_token_id.item())
+                input_tensor = torch.cat([input_tensor, next_token_id], dim=1)
+
+        return self.tokenizer.decode(generated_ids)
 
     def chat_completion(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         """Main OpenAI-compatible chat completion entry point."""
