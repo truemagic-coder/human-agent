@@ -24,7 +24,7 @@ def test_model_forward():
 
 def test_model_loss():
     """Test loss computation"""
-    model = create_hrm_model(vocab_size=50, dim=32, N=1, T=2)
+    model = create_hrm_model(vocab_size=50, dim=64, N=1, T=2)
     
     batch_size = 2
     seq_len = 8

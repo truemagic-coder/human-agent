@@ -59,7 +59,7 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     if 'low_level_module.transformer.qkv.weight' in state_dict:
         qkv_out_dim, qkv_in_dim = state_dict['low_level_module.transformer.qkv.weight'].shape
         # QKV weight is [3 * n_heads * head_dim, dim]
-        actual_heads = qkv_out_dim // (3 * (actual_dim // 32))  # Assume head_dim = dim // n_heads
+        actual_heads = qkv_out_dim // (3 * (actual_dim // 64))  # Assume head_dim = dim // n_heads
         print(f"🔍 Detected heads from QKV: {actual_heads}")
     else:
         actual_heads = config.get('n_heads', 40)
