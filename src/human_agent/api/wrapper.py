@@ -37,9 +37,14 @@ class HRMChatWrapper:
         # Register builtin functions if no registry provided
         if function_registry is None:
             register_builtin_functions(self.function_registry)
+        
+        # Validate tokenizer vocabulary size matches model
+        vocab_size = self.model.config.get('vocab_size', len(self.tokenizer.vocab))
+        if vocab_size != len(self.tokenizer.vocab):
+            logger.warning(f"Tokenizer vocab size ({len(self.tokenizer.vocab)}) does not match model vocab size ({vocab_size})")
     
     def _format_messages(self, messages: List[Dict[str, Any]]) -> str:
-        """Format messages into a single string for the model prompt."""
+        """Format messages espírito into a single string for the model prompt."""
         formatted = ""
         valid_roles = {"user", "assistant", "tool", "function"}
         
@@ -61,7 +66,7 @@ class HRMChatWrapper:
         return formatted
 
     def _parse_explicit_function_call(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse syntax."""
+        """Parse explicit function call from generated text."""
         pattern = r'<function_call>\s*(\w+)\s*\((.*?)\)\s*</function_call>'
         match = re.search(pattern, text, re.DOTALL)
         
@@ -85,6 +90,7 @@ class HRMChatWrapper:
     
     def _parse_function_call(self, text: str) -> Optional[Dict[str, Any]]:
         """Parse function call from generated text, supporting both explicit and intent-based syntax."""
+        logger.debug(f"Parsing function call from text: {text}")
         explicit_call = self._parse_explicit_function_call(text)
         if explicit_call:
             return explicit_call
@@ -137,6 +143,7 @@ class HRMChatWrapper:
 
     def _detect_function_intent(self, text: str) -> Optional[Dict[str, Any]]:
         """Detect function intent from natural language using improved regex."""
+        logger.debug(f"Detecting function intent from text: {text}")
         text_lower = text.lower()
 
         # Percentage
@@ -161,8 +168,8 @@ class HRMChatWrapper:
                     "type": "function",
                     "function": {"name": "calculate", "arguments": json.dumps({"expression": expression})}
                 }
-            except Exception:
-                logger.debug(f"Invalid math expression in intent: {expression}")
+            except Exception as e:
+                logger.debug(f"Invalid math expression in intent: {expression}, error: {str(e)}")
                 return None
 
         # Weather
@@ -250,6 +257,11 @@ class HRMChatWrapper:
                 next_token_id = torch.multinomial(sorted_probs, num_samples=1)
                 next_token_id = sorted_indices.gather(-1, next_token_id)
 
+                # Validate token ID
+                if next_token_id.item() not in self.tokenizer.reverse_vocab:
+                    logger.warning(f"Invalid token ID generated: {next_token_id.item()}")
+                    break
+                
                 # Stop if EOS or stop token is generated
                 if next_token_id.item() == self.tokenizer.eos_token_id or next_token_id.item() in stop_tokens:
                     break
@@ -260,7 +272,9 @@ class HRMChatWrapper:
                 input_tensor = torch.cat([input_tensor, next_token_id], dim=1)
 
         completion_tokens = len(generated_ids)
-        return self.tokenizer.decode(generated_ids), prompt_tokens, completion_tokens
+        decoded_text = self.tokenizer.decode(generated_ids)
+        logger.debug(f"Generated text: {decoded_text}")
+        return decoded_text, prompt_tokens, completion_tokens
 
     def chat_completion(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         """Main OpenAI-compatible chat completion entry point."""
@@ -271,7 +285,6 @@ class HRMChatWrapper:
         tools = kwargs.get('tools', [])
         if tool_choice != 'auto' and tools:
             if isinstance(tool_choice, dict) and tool_choice.get('type') == 'function':
-                # Force specific function (placeholder for future implementation)
                 logger.debug(f"Tool choice specified: {tool_choice}, not yet implemented")
         
         # If the last message is a tool result, generate a summary
@@ -367,4 +380,3 @@ class HRMChatWrapper:
             },
             "system_fingerprint": None
         }
-    
