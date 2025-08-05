@@ -121,9 +121,19 @@ class HierarchicalReasoningModel(nn.Module):
         **kwargs
     ):
         super().__init__()
-        self.config = self.__dict__ # For saving
-        self.config.update(locals())
-        del self.config['self']
+        self.config = {
+            'vocab_size': vocab_size,
+            'dim': dim,
+            'n_heads': n_heads,
+            'H_layers': H_layers,
+            'L_layers': L_layers,
+            'H_cycles': H_cycles,
+            'L_cycles': L_cycles,
+            'max_seq_len': max_seq_len,
+            'dropout': dropout,
+            'rope_theta': rope_theta,
+        }
+        self.config.update(kwargs)
 
         self.token_embedding = nn.Embedding(vocab_size, dim)
         self.dropout = nn.Dropout(dropout)
@@ -141,7 +151,6 @@ class HierarchicalReasoningModel(nn.Module):
 
         # Initial states for reasoning levels
         self.H_init = nn.Parameter(torch.randn(1, 1, dim))
-        self.L_init = nn.Parameter(torch.randn(1, 1, dim))
 
         mask = torch.full((1, 1, max_seq_len, max_seq_len), float("-inf"))
         mask = torch.triu(mask, diagonal=1)
@@ -170,22 +179,32 @@ class HierarchicalReasoningModel(nn.Module):
         
         # Initialize reasoning states
         z_H = self.H_init.expand(bsz, seqlen, -1)
-        z_L = self.L_init.expand(bsz, seqlen, -1)
+        # Start the low-level state with the input embedding
+        z_L = x_embed 
 
         # 2. Hierarchical Reasoning Loop
-        # The reference uses `torch.no_grad` for all but the last step.
-        # This is complex and akin to a recurrent network. For a simpler but
-        # still hierarchical approach, we run all cycles with gradients.
+        # This revised loop provides a more stable training dynamic.
         for _ in range(self.H_cycles):
+            # Inject high-level state into low-level state for refinement
+            current_L_input = z_L + z_H
+            
+            # Process at the low level
             for _ in range(self.L_cycles):
-                z_L = self.L_level(z_L, z_H + x_embed, cos, sin, mask)
+                current_L_input = self.L_level(current_L_input, torch.zeros_like(current_L_input), cos, sin, mask)
+            
+            # Update the low-level state with the result of the cycles
+            z_L = current_L_input
+
+            # Update the high-level state based on the new low-level state
             z_H = self.H_level(z_H, z_L, cos, sin, mask)
             
         # 3. Final Output
-        h = self.norm(z_H)
+        # Combine the final high-level state with the initial embedding
+        # This residual connection is crucial for stable learning.
+        h = self.norm(z_H + x_embed)
         logits = self.output_head(h)
 
-        return {'outputs': logits}
+        return {'logits': logits}
 
 def create_hrm_model(vocab_size: int, **kwargs) -> HierarchicalReasoningModel:
     """Factory function to create the model."""

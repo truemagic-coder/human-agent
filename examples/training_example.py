@@ -40,16 +40,18 @@ class ReasoningDataset(Dataset):
         # We take a small slice for demonstration purposes.
         print("Downloading and processing OpenOrca dataset...")
         orca_dataset = load_dataset("Open-Orca/OpenOrca", split=f"train[:{int(num_examples * 0.7)}]")
+        orca_examples = []
         for item in tqdm(orca_dataset, desc="Processing Orca"):
             q = item['question']
             a = item['response']
             # We only want shorter, high-quality examples for this training
             if len(q) > 10 and len(a) > 10 and len(q) + len(a) < 1000:
-                 self.examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
+                orca_examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
 
         # --- Process MetaMathQA for math function calling ---
         print("Downloading and processing MetaMathQA dataset...")
         math_dataset = load_dataset("meta-math/MetaMathQA", split=f"train[:{int(num_examples * 0.3)}]")
+        math_examples = []
         for item in tqdm(math_dataset, desc="Processing MetaMath"):
             q = item['query']
             a = item['response']
@@ -59,13 +61,17 @@ class ReasoningDataset(Dataset):
             math_expr_match = re.search(r'what is ([\d\s\.\+\-\*\/\(\)\^]+)\?', q.lower())
             if math_expr_match:
                 expression = math_expr_match.group(1).strip().replace('^', '**')
-                self.examples.append({
+                math_examples.append({
                     "input": f"<user>{q}</user>",
                     "output": f"<assistant><function_call>calculate(expression='{expression}')</function_call></assistant>"
                 })
             # Otherwise, use it as a standard Q&A pair for reasoning
             elif len(q) + len(a) < 1000:
-                self.examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
+                math_examples.append({"input": f"<user>{q}</user>", "output": f"<assistant>{a}</assistant>"})
+
+        # Balance the dataset by selecting equal proportions if needed
+        min_len = min(len(orca_examples), len(math_examples))
+        self.examples = orca_examples[:min_len] + math_examples[:min_len]
 
     def __len__(self):
         return len(self.examples)
@@ -131,7 +137,7 @@ def train_hrm_model(target_epochs=1):
         'L_layers': 4,
         'H_cycles': 2,        
         'L_cycles': 2,
-        'max_seq_len': 4096,
+        'max_seq_len': 256,
         'dropout': 0.1
     }
     model = create_hrm_model(**model_config).to(device)
@@ -139,9 +145,9 @@ def train_hrm_model(target_epochs=1):
     print(f"🎯 Model Size: {total_params:,} parameters ({total_params/1e9:.2f}B)")
 
     # --- Dataset and DataLoader ---
-    dataset = ReasoningDataset(tokenizer, max_length=4096)
+    dataset = ReasoningDataset(tokenizer, max_length=256)
     dataloader = DataLoader(
-        dataset, batch_size=2, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True
+        dataset, batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2, pin_memory=True
     )
 
     # --- Optimizer and Scheduler ---
@@ -153,7 +159,6 @@ def train_hrm_model(target_epochs=1):
     num_warmup_steps = int(0.1 * num_training_steps)  # 10% of steps are for warmup
 
     def lr_lambda(current_step):
-        # FIX 2: Add a linear decay after the warmup period for better convergence.
         if current_step < num_warmup_steps:
             return float(current_step) / float(max(1, num_warmup_steps))
         return max(
@@ -170,6 +175,7 @@ def train_hrm_model(target_epochs=1):
     for epoch in range(target_epochs):
         epoch_start_time = time.time()
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{target_epochs}")
+        epoch_losses = []
         
         for batch in pbar:
             input_ids = batch["input_ids"].to(device)
@@ -180,12 +186,13 @@ def train_hrm_model(target_epochs=1):
             # Use Automatic Mixed Precision (AMP)
             with torch.amp.autocast(device_type=device.type):
                 result = model(input_ids)
-                logits = result['outputs']
+                logits = result['logits']
                 
                 # Calculate loss directly, labels already prepared with ignore_index=-100
                 loss = torch.nn.functional.cross_entropy(
                     logits.view(-1, logits.size(-1)),
-                    labels.view(-1)
+                    labels.view(-1),
+                    ignore_index=-100
                 )
 
             if torch.isnan(loss):
@@ -206,23 +213,29 @@ def train_hrm_model(target_epochs=1):
             # Step the scheduler
             scheduler.step()
             
+            epoch_losses.append(loss.item())
             pbar.set_postfix({'Loss': f'{loss.item():.4f}', 'LR': f'{scheduler.get_last_lr()[0]:.2e}'})
 
         # --- End of Epoch ---
-        avg_loss = sum(pbar.iterable.last_loss for pbar in [pbar] if hasattr(pbar.iterable, 'last_loss')) / len(dataloader)
+        avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('inf')
         if avg_loss < best_loss:
             best_loss = avg_loss
             print(f"🎯 New best loss: {best_loss:.4f}. Saving model...")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'tokenizer': tokenizer,
-                'config': model.config,  # Save model config directly
+                'tokenizer_config': {
+                    'vocab': tokenizer.vocab,
+                    'special_tokens': special_tokens,
+                    'vocab_size': tokenizer.vocab_size,
+                },
+                'config': model.config,
             }, 'hrm_trained_model.pt')
 
         print(f"\n📊 Epoch {epoch+1} Summary:")
         print(f"   Average Loss: {avg_loss:.4f}")
         print(f"   Epoch Time: {format_time(time.time() - epoch_start_time)}")
+        clear_gpu_memory()
 
     print(f"\n🎉 TRAINING COMPLETED! Total time: {format_time(time.time() - start_time)}")
     print(f"💾 Best model saved to hrm_trained_model.pt with loss: {best_loss:.4f}")
@@ -232,3 +245,4 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to train")
     args = parser.parse_args()
     train_hrm_model(target_epochs=args.epochs)
+    

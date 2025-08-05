@@ -25,6 +25,10 @@ class Tokenizer:
         # Initialize with base tokens
         self.add_special_tokens(list(self.base_special_tokens.keys()))
         
+        # Add common control characters
+        for i in [9, 10, 13]:  # Tab, newline, carriage return
+            self._add_token(chr(i))
+        
         # Build the rest of the vocabulary
         self._build_vocab()
         
@@ -48,7 +52,13 @@ class Tokenizer:
             'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this',
             'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or',
             'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what',
-            'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me'
+            'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me',
+            # Expanded list for better coverage
+            'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know',
+            'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could',
+            'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come',
+            'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how',
+            'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because'
         ]
         for word in common_words:
             self._add_token(word)
@@ -94,8 +104,8 @@ class Tokenizer:
                 tokens.append(self.vocab[part])
             else:
                 # Otherwise, use a simple word/character tokenization for the rest
-                # This regex splits by space, keeping punctuation attached to words
-                sub_parts = re.findall(r'\w+|[^\w\s]', part)
+                # This regex splits by non-space sequences or space sequences
+                sub_parts = re.findall(r'\S+|\s+', part)
                 for sub_part in sub_parts:
                     if sub_part in self.vocab:
                         tokens.append(self.vocab[sub_part])
@@ -115,12 +125,14 @@ class Tokenizer:
         This method now correctly handles all tokens, including special ones.
         """
         # Decode all tokens, including special ones
-        tokens = [self.reverse_vocab.get(token_id, '') for token_id in token_ids]
+        tokens = [self.reverse_vocab.get(token_id, '<unk>') for token_id in token_ids]
         
-        # Join tokens and perform basic cleanup
+        # Join tokens without additional spaces
         text = "".join(tokens)
         
-        # A simple cleanup to handle spaces around punctuation, can be improved
-        text = text.replace(' .', '.').replace(' ,', ',').replace(' !', '!').replace(' ?', '?')
-        return text
+        # Basic cleanup to handle spaces around punctuation
+        # This assumes spaces are preserved as tokens
+        text = re.sub(r' ([.,!?])', r'\1', text)  # Remove space before punctuation
+        text = re.sub(r'\s+', ' ', text)  # Normalize multiple spaces to single
+        return text.strip()
     
