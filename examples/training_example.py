@@ -137,7 +137,7 @@ def train_hrm_model(target_epochs=1):
         'L_layers': 4,
         'H_cycles': 2,        
         'L_cycles': 2,
-        'max_seq_len': 4096,
+        'max_seq_len': 1024,
         'dropout': 0.1
     }
     model = create_hrm_model(**model_config).to(device)
@@ -145,7 +145,7 @@ def train_hrm_model(target_epochs=1):
     print(f"🎯 Model Size: {total_params:,} parameters ({total_params/1e9:.2f}B)")
 
     # --- Dataset and DataLoader ---
-    dataset = ReasoningDataset(tokenizer, max_length=4096, num_examples=50000)
+    dataset = ReasoningDataset(tokenizer, max_length=1024, num_examples=50000)
     dataloader = DataLoader(
         dataset, batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2, pin_memory=True
     )
