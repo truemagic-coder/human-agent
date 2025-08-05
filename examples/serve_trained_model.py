@@ -168,10 +168,9 @@ async def chat_completions(request: ChatCompletionRequest):
 
 if __name__ == "__main__":
     logger.info("Starting HRM API Server...")
-    logger.info(f"Device: {device.upper()}")
+    logger.info(f"Device: {device.type.upper()}")
     params = model_config.get('total_params', 0)
     logger.info(f"Model: hrm-agent, {params:,} parameters ({params/1e9:.2f}B)")
     logger.info("API Docs: http://localhost:8000/docs")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
