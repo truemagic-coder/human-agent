@@ -3,14 +3,15 @@ import torch
 import json
 import re
 import torch.nn.functional as F
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from ..core.model import HierarchicalReasoningModel
 from ..core.tokenizer import Tokenizer
 from ..functions.registry import FunctionRegistry
 from ..functions.builtin import register_builtin_functions
+import uuid
 
 class HRMChatWrapper:
-    """OpenAI-compatible wrapper for HRM model with function calling"""
+    """OpenAI-compatible wrapper for HRM model with tool calling"""
     
     def __init__(
         self,
@@ -22,61 +23,61 @@ class HRMChatWrapper:
         self.model = model
         self.tokenizer = tokenizer
         self.function_registry = function_registry or FunctionRegistry()
-        self.device = device
+        self.device = torch.device(device)
         
         # Move model to device
-        self.model = self.model.to(device)
+        self.model = self.model.to(self.device)
         self.model.eval()
         
         # Register builtin functions if no registry provided
         if function_registry is None:
             register_builtin_functions(self.function_registry)
     
-    def _format_messages(self, messages: List[Dict[str, str]]) -> str:
+    def _format_messages(self, messages: List[Dict[str, Any]]) -> str:
         """Format messages into a single string for the model prompt."""
         formatted = ""
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
             function_call = msg.get("function_call")
+            tool_calls = msg.get("tool_calls")
+            tool_call_id = msg.get("tool_call_id")
             
-            if role == "assistant" and function_call:
-                func_name = function_call.get('name')
-                func_args = function_call.get('arguments', '')
-                if func_name:
-                    formatted += f"<assistant><function_call>{func_name}({func_args})</function_call></assistant>"
-            elif role == "function":
+            if role == "assistant" and (function_call or tool_calls):
+                if tool_calls:
+                    for tool_call in tool_calls:
+                        func_name = tool_call.get("function", {}).get("name")
+                        func_args = tool_call.get("function", {}).get("arguments", "")
+                        formatted += f"<assistant></assistant>"
+                elif function_call:
+                    func_name = function_call.get("name")
+                    func_args = function_call.get("arguments", "")
+                    formatted += f"<assistant></assistant>"
+            elif role == "tool" or (role == "function" and content):
                 formatted += f"<function_result>{content}</function_result>"
             elif content:
                 formatted += f"<{role}>{content}</{role}>"
         return formatted
 
     def _parse_function_call(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse function call from generated text."""
-        explicit_call = self._parse_explicit_function_call(text)
-        if explicit_call:
-            return explicit_call
-        
-        intent_call = self._detect_function_intent(text)
-        if intent_call:
-            return intent_call
-        
-        return None
-    
-    def _parse_explicit_function_call(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse <function_call>...</function_call> syntax."""
-        pattern = r'<function_call>\s*(\w+)\s*\((.*?)\)\s*</function_call>'
+        """Parse function call from generated text, supporting both syntax."""
+        pattern = r''
         match = re.search(pattern, text, re.DOTALL)
         
         if match:
             func_name = match.group(1)
             args_str = match.group(2).strip()
             args = self._parse_arguments(args_str, func_name)
-            return {"name": func_name, "arguments": json.dumps(args)}
-        return None
+            if func_name not in self.function_registry.functions:
+                return None
+            return {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {"name": func_name, "arguments": json.dumps(args)}
+            }
     
     def _parse_arguments(self, args_str: str, func_name: str) -> Dict[str, Any]:
-        """Parse key=value or JSON arguments."""
+        """Parse key=value or JSON arguments, preserving quoted strings."""
         try:
             if args_str.strip().startswith('{'):
                 return json.loads(args_str)
@@ -85,10 +86,17 @@ class HRMChatWrapper:
         
         args = {}
         try:
-            for arg in args_str.split(','):
-                if '=' in arg:
-                    key, value = arg.split('=', 1)
-                    args[key.strip()] = value.strip().strip('"\'')
+            parts = re.split(r',(?=(?:[^\'"]|\'[^\']*\'|"[^"]*")*$)', args_str)
+            for part in parts:
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if value.startswith('"') and value.endswith('"'):
+                        value = value[1:-1]
+                    elif value.startswith("'") and value.endswith("'"):
+                        value = value[1:-1]
+                    args[key] = value
         except Exception:
             pass
         return args
@@ -102,109 +110,168 @@ class HRMChatWrapper:
         if perc_match:
             p, num = perc_match.groups()
             expression = f"({p} / 100) * {num}"
-            return {"name": "calculate", "arguments": {"expression": expression}}
+            return {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {"name": "calculate", "arguments": json.dumps({"expression": expression})}
+            }
 
         # General Math
         math_match = re.search(r'(?:calculate|compute|what is|what\'s)\s+([\d\s\.\+\-\*\/\(\)\^]+)', text_lower)
         if math_match:
-            expression = math_match.group(1).strip()
-            # Convert power operator for Python
-            expression = expression.replace('^', '**')
-            return {"name": "calculate", "arguments": {"expression": expression}}
+            expression = math_match.group(1).strip().replace('^', '**')
+            try:
+                eval(expression, {"__builtins__": {}}, {})  # Safe eval for syntax check
+                return {
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": {"name": "calculate", "arguments": json.dumps({"expression": expression})}
+                }
+            except:
+                return None
 
         # Weather
         weather_loc_match = re.search(r'weather.*(?:in|for|at)\s+([a-zA-Z\s,]+)', text_lower)
         if weather_loc_match:
             location = weather_loc_match.group(1).strip()
-            # Clean up trailing words
             location = re.sub(r'\b(please|today|now)\b', '', location, flags=re.IGNORECASE).strip('?.,! ')
-            return {"name": "get_weather", "arguments": {"location": location}}
+            return {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": json.dumps({"location": location})}
+            }
         
         weather_temp_match = re.search(r'(?:temperature|temp)\s+(?:in|for|at)\s+([a-zA-Z\s,]+)', text_lower)
         if weather_temp_match:
             location = weather_temp_match.group(1).strip().strip('?.,! ')
-            return {"name": "get_weather", "arguments": {"location": location}}
+            return {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": json.dumps({"location": location})}
+            }
             
         weather_cond_match = re.search(r'is it (raining|sunny|cloudy|snowing).*(?:in|at)\s+([a-zA-Z\s,]+)', text_lower)
         if weather_cond_match:
             condition, location = weather_cond_match.groups()
             location = location.strip().strip('?.,! ')
-            return {"name": "get_weather", "arguments": {"location": location}}
+            return {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": json.dumps({"location": location})}
+            }
 
         # Time
         if re.search(r'time|date', text_lower):
-            return {"name": "get_current_time", "arguments": {}}
+            return {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {"name": "get_current_time", "arguments": json.dumps({})}
+            }
             
         return None
 
-    def _generate_response(self, prompt: str, max_len: int, temperature: float) -> str:
-        """Generates a response from the model, token by token, using a KV cache."""
-        input_ids = self.tokenizer.encode(prompt)
-        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=self.device)
+    def _generate_response(self, prompt: str, max_len: int, temperature: float, top_p: float, stop: Optional[Union[str, List[str]]]) -> tuple[str, int]:
+        """Generates a response from the model, token by token, with token counting."""
+        temperature = max(0.1, min(temperature, 2.0))
+        top_p = max(0.1, min(top_p, 1.0))
         
+        input_ids = self.tokenizer.encode(prompt)
+        prompt_tokens = len(input_ids)
+        max_seq_len = self.model.config.get('max_seq_len', 256)
+        
+        if len(input_ids) > max_seq_len - max_len:
+            input_ids = input_ids[-(max_seq_len - max_len):]
+            prompt_tokens = len(input_ids)
+        
+        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=self.device)
         generated_ids = []
         
-        # --- THIS IS THE FIX FOR THE CRASH ---
-        # The model's max sequence length is stored in its config.
-        max_seq_len = self.model.config.get('max_seq_len', 256)
-
+        stop_tokens = []
+        if stop:
+            if isinstance(stop, str):
+                stop_tokens = [self.tokenizer.encode(stop)[0]] if stop else []
+            elif isinstance(stop, list):
+                stop_tokens = [self.tokenizer.encode(s)[0] for s in stop if s]
+        
         for _ in range(max_len):
-            # Ensure the input tensor doesn't exceed the model's context window
             if input_tensor.shape[1] >= max_seq_len:
                 print(f"[WARN] Sequence length {input_tensor.shape[1]} exceeds max_seq_len {max_seq_len}. Stopping generation.")
                 break
 
             with torch.no_grad():
                 outputs = self.model(input_tensor)
-                logits = outputs['outputs'][:, -1, :]
+                logits = outputs['logits'][:, -1, :]
 
-                # Apply temperature and sample
-                logits = logits / (temperature + 1e-8) # Add epsilon for stability
+                # Apply temperature and top-p sampling
+                logits = logits / temperature
                 probs = F.softmax(logits, dim=-1)
-                next_token_id = torch.multinomial(probs, num_samples=1)
+                
+                # Top-p (nucleus) sampling
+                sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                mask = cumulative_probs <= top_p
+                sorted_probs = sorted_probs * mask.float()
+                sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+                next_token_id = torch.multinomial(sorted_probs, num_samples=1)
+                next_token_id = sorted_indices.gather(-1, next_token_id)
 
-                # Stop if EOS token is generated
-                if next_token_id.item() == self.tokenizer.eos_token_id:
+                # Stop if EOS or stop token is generated
+                if next_token_id.item() == self.tokenizer.eos_token_id or next_token_id.item() in stop_tokens:
                     break
                 
                 generated_ids.append(next_token_id.item())
-                # Append only the new token for the next iteration
+                if input_tensor.shape[1] >= max_seq_len:
+                    input_tensor = input_tensor[:, -max_seq_len + 1:]
                 input_tensor = torch.cat([input_tensor, next_token_id], dim=1)
 
-        return self.tokenizer.decode(generated_ids)
+        completion_tokens = len(generated_ids)
+        return self.tokenizer.decode(generated_ids), prompt_tokens, completion_tokens
 
     def chat_completion(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         """Main OpenAI-compatible chat completion entry point."""
         last_message = messages[-1] if messages else {}
         
-        # If the last message is a function result, generate a summary
-        if last_message.get("role") == "function":
-            return self._handle_function_result(messages, **kwargs)
+        # Handle tool_choice
+        tool_choice = kwargs.get('tool_choice', 'auto')
+        tools = kwargs.get('tools', [])
+        if tool_choice != 'auto' and tools:
+            if isinstance(tool_choice, dict) and tool_choice.get('type') == 'function':
+                # Force specific function
+                pass  # Not implemented yet, can add logic to bias toward specific tool
+
+        # If the last message is a tool result, generate a summary
+        if last_message.get("role") in ("tool", "function"):
+            return self._handle_tool_result(messages, **kwargs)
         
         # Otherwise, process the user's message
         prompt = self._format_messages(messages)
         prompt += "<assistant>"
         
-        # Generate a response, which might be text or a function call
-        generated_text = self._generate_response(prompt, kwargs.get('max_tokens', 150), kwargs.get('temperature', 0.7))
+        # Generate a response
+        generated_text, prompt_tokens, completion_tokens = self._generate_response(
+            prompt, 
+            kwargs.get('max_tokens', 150), 
+            kwargs.get('temperature', 0.7),
+            kwargs.get('top_p', 1.0),
+            kwargs.get('stop', None)
+        )
         
-        # Check if the model decided to call a function
-        function_call = self._parse_function_call(generated_text)
+        response_text = re.sub(r'^<assistant>\s*|\s*</assistant>$', '', generated_text).strip()
         
-        if function_call:
-            # Model wants to call a function
+        # Check if the model decided to call a tool
+        tool_call = self._parse_function_call(generated_text)
+        
+        if tool_call:
             choice = {
                 "index": 0,
                 "message": {
                     "role": "assistant",
                     "content": None,
-                    "function_call": function_call
+                    "tool_calls": [tool_call]
                 },
-                "finish_reason": "function_call"
+                "finish_reason": "tool_calls"
             }
         else:
-            # Model generated a text response
-            response_text = generated_text.replace("<assistant>", "").strip()
             if not response_text:
                 response_text = "I'm not sure how to answer that. I can help with calculations, weather, and time. What would you like to know?"
             
@@ -219,18 +286,30 @@ class HRMChatWrapper:
             "object": "chat.completion",
             "created": int(time.time()),
             "model": "hrm-agent",
-            "choices": [choice]
+            "choices": [choice],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens
+            },
+            "system_fingerprint": None
         }
 
-    def _handle_function_result(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
-        """Generate a final response after a function has been executed."""
+    def _handle_tool_result(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        """Generate a final response after a tool has been executed."""
         prompt = self._format_messages(messages)
         prompt += "<assistant>"
         
-        # Generate a natural language summary of the function result
-        response_text = self._generate_response(prompt, kwargs.get('max_tokens', 150), kwargs.get('temperature', 0.7))
+        generated_text, prompt_tokens, completion_tokens = self._generate_response(
+            prompt, 
+            kwargs.get('max_tokens', 150), 
+            kwargs.get('temperature', 0.7),
+            kwargs.get('top_p', 1.0),
+            kwargs.get('stop', None)
+        )
         
-        # FIX: Add the same fallback logic here for robustness.
+        response_text = re.sub(r'^<assistant>\s*|\s*</assistant>$', '', generated_text).strip()
+        
         if not response_text or len(response_text) < 5:
             response_text = "I have processed the information. What would you like to do next?"
 
@@ -245,6 +324,12 @@ class HRMChatWrapper:
             "object": "chat.completion",
             "created": int(time.time()),
             "model": "hrm-agent",
-            "choices": [choice]
+            "choices": [choice],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens
+            },
+            "system_fingerprint": None
         }
     

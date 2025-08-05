@@ -70,42 +70,6 @@ async def chat_completions(request: ChatCompletionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/v1/functions/register")
-async def register_function(
-    name: str,
-    code: str,
-    description: Optional[str] = None
-):
-    """Register a new function for calling"""
-    if chat_model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    try:
-        # Execute code to define function
-        local_vars = {}
-        exec(code, {"__builtins__": __builtins__}, local_vars)
-        
-        if name not in local_vars:
-            raise ValueError(f"Function {name} not found in provided code")
-        
-        func = local_vars[name]
-        chat_model.function_registry.register_function(func, description)
-        
-        return {"message": f"Function {name} registered successfully"}
-        
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.get("/v1/functions")
-async def list_functions():
-    """List available functions"""
-    if chat_model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    return {
-        "functions": chat_model.function_registry.get_schemas()
-    }
-
 def main():
     """Main entry point for the server"""
     uvicorn.run(app, host="0.0.0.0", port=8000)
