@@ -1,7 +1,14 @@
 import requests
 import json
 import time
+import logging
+import re
 from typing import Dict, Any, List
+import ast
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class HrmApiClient:
     """A simple and robust client for the HRM API."""
@@ -18,16 +25,67 @@ class HrmApiClient:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"❌ Failed to connect to API: {e}")
+            logger.error(f"Failed to connect to API: {str(e)}")
             return {}
 
-    def chat_completion(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+    def chat_completion(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """Sends a chat completion request to the API."""
         payload = {
             "model": "hrm-agent",
             "messages": messages,
             "max_tokens": kwargs.get('max_tokens', 150),
-            "temperature": kwargs.get('temperature', 0.7)
+            "temperature": kwargs.get('temperature', 0.7),
+            "top_p": kwargs.get('top_p', 1.0),
+            "tools": kwargs.get('tools', [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculate",
+                        "description": "Safely evaluate mathematical expressions",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"expression": {"type": "string", "description": "A mathematical expression"}},
+                            "required": ["expression"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get current weather for a location",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"location": {"type": "string", "description": "The city or location name"}},
+                            "required": ["location"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_web",
+                        "description": "Search the web for information",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string", "description": "The search query string"}},
+                            "required": ["query"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_time",
+                        "description": "Get the current date and time",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    }
+                }
+            ])
         }
         
         try:
@@ -35,71 +93,145 @@ class HrmApiClient:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            return {"error": f"API request failed: {e}"}
+            logger.error(f"API request failed: {str(e)}")
+            return {"error": f"API request failed: {str(e)}"}
 
-def execute_function_call(func_call: Dict[str, Any]) -> Any:
+def execute_function_call(func_call: Dict[str, Any]) -> str:
     """
-    Simulates the execution of a function call on the client side.
-    In a real application, this would call your actual tools.
+    Executes a function call on the client side, mimicking server-side behavior.
+
+    Args:
+        func_call: Dictionary with 'name' and 'arguments' (JSON string or dict).
+
+    Returns:
+        A string result or error message.
     """
     name = func_call.get("name")
     try:
-        args = json.loads(func_call.get("arguments", "{}"))
+        args = json.loads(func_call.get("arguments", "{}")) if isinstance(func_call.get("arguments"), str) else func_call.get("arguments", {})
         
         if name == "calculate":
-            # WARNING: eval is unsafe in production. Use a safe math parser.
             expression = args.get("expression", "0")
-            return eval(expression, {"__builtins__": {}}, {})
+            allowed_nodes = (
+                ast.Expression, ast.BinOp, ast.UnaryOp, ast.operator,
+                ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
+                ast.USub, ast.UAdd, ast.Name, ast.Load, ast.Constant
+            )
+            tree = ast.parse(expression, mode='eval')
+            for node in ast.walk(tree):
+                if not isinstance(node, allowed_nodes):
+                    raise ValueError(f"Unsupported operation: {type(node).__name__}")
+            allowed_names = {'pi': 3.141592653589793, 'e': 2.718281828459045}
+            code = compile(tree, '<string>', 'eval')
+            result = eval(code, {"__builtins__": {}}, allowed_names)
+            return str(result)
         elif name == "get_weather":
             location = args.get("location", "Unknown")
             return f"The weather in {location} is sunny and 25°C."
+        elif name == "search_web":
+            query = args.get("query", "Unknown")
+            return f"Search results for '{query}': Mock response."
         elif name == "get_current_time":
             return time.strftime("%Y-%m-%d %H:%M:%S")
         else:
-            return f"Unknown function: {name}"
+            return f"Error: Unknown function: {name}"
     except Exception as e:
-        return f"Error executing function {name}: {e}"
+        logger.error(f"Error executing function {name}: {str(e)}")
+        return f"Error executing function {name}: {str(e)}"
+
+def is_gibberish(text: str) -> bool:
+    """Detects if text is gibberish (e.g., excessive repetition or invalid characters)."""
+    if not text:
+        return False
+    # Check for excessive repetition of a tag or character
+    if re.search(r'(\b\w+\b)\1{5,}', text) or re.search(r'(.)\1{10,}', text):
+        return True
+    # Check for high proportion of non-alphanumeric characters
+    non_alnum = len(re.sub(r'[a-zA-Z0-9\s]', '', text))
+    return non_alnum > len(text) * 0.5
 
 def run_conversation_step(client: HrmApiClient, messages: List[Dict[str, Any]], user_prompt: str):
-    """Runs a single turn of the conversation, handling potential function calls."""
-    print(f"👤 User: {user_prompt}")
+    """Runs a single turn of the conversation, handling potential tool calls."""
+    logger.info(f"User: {user_prompt}")
     messages.append({"role": "user", "content": user_prompt})
 
     response = client.chat_completion(messages=messages)
     
     if "error" in response:
-        print(f"   ❌ Error: {response['error']}")
+        logger.error(f"Error: {response['error']}")
+        return
+
+    if not response.get("choices") or not isinstance(response["choices"], list) or not response["choices"]:
+        logger.error("Invalid response format: no choices found")
         return
 
     choice = response["choices"][0]
     finish_reason = choice.get("finish_reason")
     
-    if finish_reason == "function_call":
-        # The model wants to call a function.
-        func_call = choice["message"]["function_call"]
-        print(f"   🔧 Model wants to call: {func_call['name']}({func_call['arguments']})")
+    if finish_reason == "tool_calls":
+        tool_calls = choice["message"].get("tool_calls", [])
+        if not tool_calls:
+            logger.error("No tool_calls found despite finish_reason='tool_calls'")
+            return
         
-        # Execute the function and get the result.
+        for tool_call in tool_calls:
+            func_call = tool_call.get("function", {})
+            logger.info(f"Model wants to call: {func_call.get('name')}({func_call.get('arguments')})")
+            
+            result = execute_function_call(func_call)
+            logger.info(f"Client executed function. Result: {result}")
+            
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call]
+            })
+            messages.append({
+                "role": "tool",
+                "content": str(result),
+                "tool_call_id": tool_call.get("id")
+            })
+            
+            final_response = client.chat_completion(messages=messages)
+            if "error" not in final_response and final_response.get("choices"):
+                final_content = final_response["choices"][0]["message"]["content"]
+                if is_gibberish(final_content):
+                    logger.warning(f"Gibberish response detected: {final_content}")
+                    final_content = "I'm sorry, I generated an invalid response. Please try again."
+                logger.info(f"Assistant: {final_content}")
+                messages.append({"role": "assistant", "content": final_content})
+            else:
+                logger.error(f"Error on follow-up: {final_response.get('error', 'Unknown error')}")
+    elif finish_reason == "function_call":  # Backward compatibility
+        func_call = choice["message"].get("function_call", {})
+        logger.info(f"Model wants to call: {func_call.get('name')}({func_call.get('arguments')})")
+        
         result = execute_function_call(func_call)
-        print(f"   ✅ Client executed function. Result: {result}")
+        logger.info(f"Client executed function. Result: {result}")
         
-        # Add the function call and result to the conversation history.
-        messages.append(choice["message"]) # Assistant's function call turn
-        messages.append({"role": "function", "name": func_call["name"], "content": str(result)})
+        messages.append(choice["message"])
+        messages.append({
+            "role": "function",
+            "name": func_call.get("name"),
+            "content": str(result)
+        })
         
-        # Call the model AGAIN with the function result to get a natural language response.
         final_response = client.chat_completion(messages=messages)
-        if "error" not in final_response:
+        if "error" not in final_response and final_response.get("choices"):
             final_content = final_response["choices"][0]["message"]["content"]
-            print(f"   🤖 Assistant: {final_content}")
+            if is_gibberish(final_content):
+                logger.warning(f"Gibberish response detected: {final_content}")
+                final_content = "I'm sorry, I generated an invalid response. Please try again."
+            logger.info(f"Assistant: {final_content}")
             messages.append({"role": "assistant", "content": final_content})
         else:
-            print(f"   ❌ Error on follow-up: {final_response['error']}")
-
+            logger.error(f"Error on follow-up: {final_response.get('error', 'Unknown error')}")
     else:
-        # The model gave a direct text response.
-        assistant_response = choice["message"]["content"]
-        print(f"   🤖 Assistant: {assistant_response}")
+        assistant_response = choice["message"].get("content", "")
+        if is_gibberish(assistant_response):
+            logger.warning(f"Gibberish response detected: {assistant_response}")
+            assistant_response = "I'm sorry, I generated an invalid response. Please try again."
+        logger.info(f"Assistant: {assistant_response}")
         messages.append({"role": "assistant", "content": assistant_response})
 
 def run_test_suite(client: HrmApiClient):
@@ -126,45 +258,45 @@ def run_test_suite(client: HrmApiClient):
     }
 
     for category, prompts in test_cases.items():
-        print("\n" + "="*50)
-        print(category)
-        print("="*50)
+        logger.info("\n" + "="*50)
+        logger.info(category)
+        logger.info("="*50)
         messages = [] # Reset history for each category
         for prompt in prompts:
             run_conversation_step(client, messages, prompt)
-            print("-" * 20)
+            logger.info("-" * 20)
 
 def interactive_mode(client: HrmApiClient):
     """Starts an interactive chat session with the model."""
-    print("\n" + "="*50)
-    print("💬 Interactive Mode")
-    print("="*50)
-    print("Type 'quit' or 'exit' to end.")
+    logger.info("\n" + "="*50)
+    logger.info("💬 Interactive Mode")
+    logger.info("="*50)
+    logger.info("Type 'quit' or 'exit' to end.")
     messages = []
     while True:
         try:
             user_prompt = input("👤 You: ").strip()
             if user_prompt.lower() in ["quit", "exit"]:
-                print("👋 Goodbye!")
+                logger.info("Goodbye!")
                 break
             if user_prompt:
                 run_conversation_step(client, messages, user_prompt)
         except KeyboardInterrupt:
-            print("\n👋 Goodbye!")
+            logger.info("\nGoodbye!")
             break
 
 def main():
     """Main function to run the client."""
-    print("🧠 HRM API Client")
+    logger.info("HRM API Client")
     client = HrmApiClient()
     
     api_info = client.get_api_info()
     if not api_info:
-        print("Please make sure the server is running: python examples/serve_trained_model.py")
+        logger.error("Please make sure the server is running: python examples/serve_trained_model.py")
         return
         
-    print("✅ API Server is online.")
-    print(f"   Model: {api_info.get('model', 'Unknown')}")
+    logger.info("API Server is online.")
+    logger.info(f"Model: {api_info.get('model', 'Unknown')}")
     
     run_test_suite(client)
     
@@ -172,3 +304,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
