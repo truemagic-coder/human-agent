@@ -1,7 +1,6 @@
 import ast
 import random
 from datetime import datetime
-from typing import Dict
 from .registry import FunctionRegistry
 
 def calculate(expression: str) -> str:
@@ -121,4 +120,3 @@ def register_builtin_functions(registry: FunctionRegistry) -> None:
             "required": []
         }
     )
-    
