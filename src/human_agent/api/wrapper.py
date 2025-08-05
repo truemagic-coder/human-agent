@@ -4,11 +4,16 @@ import json
 import re
 import torch.nn.functional as F
 from typing import List, Dict, Any, Optional, Union
+import logging
 from ..core.model import HierarchicalReasoningModel
 from ..core.tokenizer import Tokenizer
 from ..functions.registry import FunctionRegistry
 from ..functions.builtin import register_builtin_functions
 import uuid
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class HRMChatWrapper:
     """OpenAI-compatible wrapper for HRM model with tool calling"""
@@ -36,69 +41,98 @@ class HRMChatWrapper:
     def _format_messages(self, messages: List[Dict[str, Any]]) -> str:
         """Format messages into a single string for the model prompt."""
         formatted = ""
+        valid_roles = {"user", "assistant", "tool", "function"}
+        
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
-            function_call = msg.get("function_call")
-            tool_calls = msg.get("tool_calls")
-            tool_call_id = msg.get("tool_call_id")
             
-            if role == "assistant" and (function_call or tool_calls):
-                if tool_calls:
-                    for tool_call in tool_calls:
-                        func_name = tool_call.get("function", {}).get("name")
-                        func_args = tool_call.get("function", {}).get("arguments", "")
-                        formatted += f"<assistant></assistant>"
-                elif function_call:
-                    func_name = function_call.get("name")
-                    func_args = function_call.get("arguments", "")
-                    formatted += f"<assistant></assistant>"
-            elif role == "tool" or (role == "function" and content):
+            if role not in valid_roles:
+                logger.warning(f"Invalid role '{role}' in message, skipping")
+                continue
+            
+            if role in ("tool", "function") and content:
                 formatted += f"<function_result>{content}</function_result>"
-            elif content:
+            elif role in ("user", "assistant") and content:
                 formatted += f"<{role}>{content}</{role}>"
+            else:
+                logger.debug(f"Skipping message with role '{role}' and no valid content")
+        
         return formatted
 
-    def _parse_function_call(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse function call from generated text, supporting both syntax."""
+    def _parse_explicit_function_call(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse syntax."""
         pattern = r''
         match = re.search(pattern, text, re.DOTALL)
         
-        if match:
-            func_name = match.group(1)
-            args_str = match.group(2).strip()
-            args = self._parse_arguments(args_str, func_name)
-            if func_name not in self.function_registry.functions:
-                return None
-            return {
-                "id": f"call_{uuid.uuid4().hex[:8]}",
-                "type": "function",
-                "function": {"name": func_name, "arguments": json.dumps(args)}
-            }
+        if not match:
+            logger.debug(f"No explicit function call found in text: {text}")
+            return None
+        
+        func_name = match.group(1)
+        args_str = match.group(2).strip()
+        args = self._parse_arguments(args_str, func_name)
+        
+        if func_name not in self.function_registry.functions:
+            logger.warning(f"Function {func_name} not found in registry")
+            return None
+        
+        return {
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {"name": func_name, "arguments": json.dumps(args)}
+        }
+    
+    def _parse_function_call(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse function call from generated text, supporting both explicit and intent-based syntax."""
+        explicit_call = self._parse_explicit_function_call(text)
+        if explicit_call:
+            return explicit_call
+        
+        intent_call = self._detect_function_intent(text)
+        if intent_call:
+            return intent_call
+        
+        return None
     
     def _parse_arguments(self, args_str: str, func_name: str) -> Dict[str, Any]:
         """Parse key=value or JSON arguments, preserving quoted strings."""
-        try:
-            if args_str.strip().startswith('{'):
-                return json.loads(args_str)
-        except json.JSONDecodeError:
-            pass
-        
         args = {}
         try:
-            parts = re.split(r',(?=(?:[^\'"]|\'[^\']*\'|"[^"]*")*$)', args_str)
-            for part in parts:
-                if '=' in part:
-                    key, value = part.split('=', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    if value.startswith('"') and value.endswith('"'):
-                        value = value[1:-1]
-                    elif value.startswith("'") and value.endswith("'"):
-                        value = value[1:-1]
-                    args[key] = value
-        except Exception:
-            pass
+            if args_str.strip().startswith('{'):
+                args = json.loads(args_str)
+            else:
+                parts = re.split(r',(?=(?:[^\'"]|\'[^\']*\'|"[^"]*")*$)', args_str)
+                for part in parts:
+                    if '=' in part:
+                        key, value = part.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        if value.startswith('"') and value.endswith('"'):
+                            value = value[1:-1]
+                        elif value.startswith("'") and value.endswith("'"):
+                            value = value[1:-1]
+                        args[key] = value
+        except Exception as e:
+            logger.warning(f"Failed to parse arguments for {func_name}: {args_str}, error: {str(e)}")
+            return {}
+        
+        # Validate against schema
+        if func_name in self.function_registry.functions:
+            schema = self.function_registry.functions[func_name].get('parameters', {})
+            required = schema.get('required', [])
+            properties = schema.get('properties', {})
+            for key in required:
+                if key not in args:
+                    logger.warning(f"Missing required parameter {key} for function {func_name}")
+                    return {}
+                prop_type = properties.get(key, {}).get('type')
+                if prop_type == 'string' and not isinstance(args[key], str):
+                    logger.warning(f"Invalid type for {key}: expected string, got {type(args[key])}")
+                    return {}
+                elif prop_type in ('integer', 'number') and not isinstance(args[key], (int, float)):
+                    logger.warning(f"Invalid type for {key}: expected number, got {type(args[key])}")
+                    return {}
         return args
 
     def _detect_function_intent(self, text: str) -> Optional[Dict[str, Any]]:
@@ -127,7 +161,8 @@ class HRMChatWrapper:
                     "type": "function",
                     "function": {"name": "calculate", "arguments": json.dumps({"expression": expression})}
                 }
-            except:
+            except Exception:
+                logger.debug(f"Invalid math expression in intent: {expression}")
                 return None
 
         # Weather
@@ -170,7 +205,7 @@ class HRMChatWrapper:
             
         return None
 
-    def _generate_response(self, prompt: str, max_len: int, temperature: float, top_p: float, stop: Optional[Union[str, List[str]]]) -> tuple[str, int]:
+    def _generate_response(self, prompt: str, max_len: int, temperature: float, top_p: float, stop: Optional[Union[str, List[str]]]) -> tuple[str, int, int]:
         """Generates a response from the model, token by token, with token counting."""
         temperature = max(0.1, min(temperature, 2.0))
         top_p = max(0.1, min(top_p, 1.0))
@@ -195,7 +230,7 @@ class HRMChatWrapper:
         
         for _ in range(max_len):
             if input_tensor.shape[1] >= max_seq_len:
-                print(f"[WARN] Sequence length {input_tensor.shape[1]} exceeds max_seq_len {max_seq_len}. Stopping generation.")
+                logger.warning(f"Sequence length {input_tensor.shape[1]} exceeds max_seq_len {max_seq_len}. Stopping generation.")
                 break
 
             with torch.no_grad():
@@ -236,9 +271,9 @@ class HRMChatWrapper:
         tools = kwargs.get('tools', [])
         if tool_choice != 'auto' and tools:
             if isinstance(tool_choice, dict) and tool_choice.get('type') == 'function':
-                # Force specific function
-                pass  # Not implemented yet, can add logic to bias toward specific tool
-
+                # Force specific function (placeholder for future implementation)
+                logger.debug(f"Tool choice specified: {tool_choice}, not yet implemented")
+        
         # If the last message is a tool result, generate a summary
         if last_message.get("role") in ("tool", "function"):
             return self._handle_tool_result(messages, **kwargs)
