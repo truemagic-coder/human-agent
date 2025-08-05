@@ -62,7 +62,7 @@ class HRMChatWrapper:
 
     def _parse_explicit_function_call(self, text: str) -> Optional[Dict[str, Any]]:
         """Parse syntax."""
-        pattern = r''
+        pattern = r'<function_call>\s*(\w+)\s*\((.*?)\)\s*</function_call>'
         match = re.search(pattern, text, re.DOTALL)
         
         if not match:
