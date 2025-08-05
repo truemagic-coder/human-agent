@@ -137,7 +137,7 @@ def train_hrm_model(target_epochs=1):
         'L_layers': 4,
         'H_cycles': 2,        
         'L_cycles': 2,
-        'max_seq_len': 256,
+        'max_seq_len': 4096,
         'dropout': 0.1
     }
     model = create_hrm_model(**model_config).to(device)
@@ -145,7 +145,7 @@ def train_hrm_model(target_epochs=1):
     print(f"🎯 Model Size: {total_params:,} parameters ({total_params/1e9:.2f}B)")
 
     # --- Dataset and DataLoader ---
-    dataset = ReasoningDataset(tokenizer, max_length=256)
+    dataset = ReasoningDataset(tokenizer, max_length=4096, num_examples=50000)
     dataloader = DataLoader(
         dataset, batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2, pin_memory=True
     )
@@ -235,6 +235,15 @@ def train_hrm_model(target_epochs=1):
         print(f"\n📊 Epoch {epoch+1} Summary:")
         print(f"   Average Loss: {avg_loss:.4f}")
         print(f"   Epoch Time: {format_time(time.time() - epoch_start_time)}")
+
+        # After epoch loop
+        test_prompt = torch.tensor([tokenizer.encode("<user>Hello! How are you?</user><assistant>")], device=device)
+        with torch.no_grad():
+            result = model(test_prompt)
+            logits = result['logits'][0, -1, :]
+            next_token = torch.argmax(logits).item()
+            print(f"Test generation: {tokenizer.decode([next_token])}")
+
         clear_gpu_memory()
 
     print(f"\n🎉 TRAINING COMPLETED! Total time: {format_time(time.time() - start_time)}")
@@ -245,4 +254,3 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to train")
     args = parser.parse_args()
     train_hrm_model(target_epochs=args.epochs)
-    

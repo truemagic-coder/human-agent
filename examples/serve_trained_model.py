@@ -112,10 +112,7 @@ except Exception as e:
 
 @app.get("/")
 def root():
-    """Root endpoint with model information."""
-    params = model_config.get('total_params', 0)
-    size_b = params / 1_000_000_000
-    
+    """Root endpoint with model information."""    
     safe_config = {
         k: v for k, v in model_config.items() 
         if isinstance(v, (str, int, float, bool, type(None)))
@@ -130,8 +127,6 @@ def root():
 @app.get("/v1/models")
 def list_models():
     """List available models in OpenAI-compatible format."""
-    params = model_config.get('total_params', 0)
-    size_b = params / 1_000_000_000
     return {
         "object": "list",
         "data": [
