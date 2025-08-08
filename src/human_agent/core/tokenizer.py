@@ -6,6 +6,7 @@ class Tokenizer:
 
     def __init__(self, vocab_size: int = 16000, special_tokens: Optional[Iterable[str]] = None):
         self.max_vocab_size = vocab_size
+        self._frozen = False
         base_specials = ["<pad>", "<unk>", "<bos>", "<eos>"]
         if special_tokens:
             base_specials.extend([t for t in special_tokens if t not in base_specials])
@@ -23,6 +24,14 @@ class Tokenizer:
         self.unk_token_id = self.vocab["<unk>"]
         self.bos_token_id = self.vocab["<bos>"]
         self.eos_token_id = self.vocab["<eos>"]
+
+    def freeze(self) -> None:
+        """Prevent further vocabulary growth."""
+        self._frozen = True
+
+    def unfreeze(self) -> None:
+        """Allow vocabulary growth."""
+        self._frozen = False
 
     def _add_to_vocab(self, token: str) -> int:
         if token in self.vocab:
@@ -64,7 +73,7 @@ class Tokenizer:
                 ids.append(self.vocab[tok])
             else:
                 # Grow vocab up to max size; otherwise use <unk>
-                if len(self.vocab) < self.max_vocab_size:
+                if not self._frozen and len(self.vocab) < self.max_vocab_size:
                     idx = self._add_to_vocab(tok)
                     ids.append(idx)
                     # maintain id_to_token
