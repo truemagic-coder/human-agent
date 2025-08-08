@@ -227,7 +227,7 @@ def train_hrm_model(target_epochs=1):
                 'tokenizer_config': {
                     'vocab': tokenizer.vocab,
                     'special_tokens': special_tokens,
-                    'vocab_size': tokenizer.vocab_size,
+                    'vocab_size': len(tokenizer.vocab),
                 },
                 'config': model.config,
             }, 'hrm_trained_model.pt')

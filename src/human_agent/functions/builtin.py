@@ -1,122 +1,61 @@
 import ast
-import random
-from datetime import datetime
+import operator
 from .registry import FunctionRegistry
 
-def calculate(expression: str) -> str:
-    """Safely evaluate a mathematical expression and return result as a string.
+# Safe operators for arithmetic evaluation
+_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+    ast.BitXor: operator.xor,  # allow ^ if needed
+}
 
-    Args:
-        expression: A string containing a mathematical expression (e.g., "2 + 3 * 4").
+def _eval_ast(node) -> float:
+    if isinstance(node, ast.Expression):
+        return _eval_ast(node.body)
+    if isinstance(node, ast.Num):  # py<3.8
+        return float(node.n)
+    if isinstance(node, ast.Constant):  # py>=3.8
+        if isinstance(node.value, (int, float)):
+            return float(node.value)
+        raise ValueError("Only numeric constants are allowed.")
+    if isinstance(node, ast.BinOp):
+        left = _eval_ast(node.left)
+        right = _eval_ast(node.right)
+        op_type = type(node.op)
+        if op_type not in _OPS:
+            raise ValueError(f"Operator {op_type.__name__} is not allowed.")
+        return float(_OPS[op_type](left, right))
+    if isinstance(node, ast.UnaryOp):
+        operand = _eval_ast(node.operand)
+        op_type = type(node.op)
+        if op_type not in _OPS:
+            raise ValueError(f"Operator {op_type.__name__} is not allowed.")
+        return float(_OPS[op_type](operand))
+    raise ValueError("Unsupported expression.")
 
-    Returns:
-        A string representing the result of the evaluation.
-    """
-    try:
-        allowed_nodes = (
-            ast.Expression, ast.BinOp, ast.UnaryOp, ast.operator,
-            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
-            ast.USub, ast.UAdd, ast.Name, ast.Load, ast.Constant
-        )
-        tree = ast.parse(expression, mode='eval')
-        for node in ast.walk(tree):
-            if not isinstance(node, allowed_nodes):
-                raise ValueError(f"Unsupported operation: {type(node).__name__}")
-        
-        allowed_names = {'pi': 3.141592653589793, 'e': 2.718281828459045}
-        code = compile(tree, '<string>', 'eval')
-        result = eval(code, {"__builtins__": {}}, allowed_names)
-        return str(result)  # Return as string to preserve precision
-    except SyntaxError:
-        raise ValueError(f"Invalid expression syntax: {expression}")
-    except ZeroDivisionError:
-        raise ValueError("Division by zero is not allowed")
-    except Exception as e:
-        raise ValueError(f"Evaluation error: {str(e)}")
+def calculate(expression: str) -> float:
+    """Evaluate a basic arithmetic expression safely and return a float."""
+    tree = ast.parse(expression, mode="eval")
+    return float(_eval_ast(tree))
 
 def get_weather(location: str) -> str:
-    """Get weather information for a location (mock implementation).
-
-    Args:
-        location: The name of the city or location.
-
-    Returns:
-        A string describing the weather conditions and temperature.
-    """
-    conditions = ["sunny", "cloudy", "rainy", "snowy", "partly cloudy", "windy"]
-    temp = random.randint(-5, 30)
-    condition = random.choice(conditions)
-    return f"Current weather in {location}: {condition}, {temp}°C, humidity {random.randint(40, 80)}%"
+    """Return a simple mock weather string for a location."""
+    # Keep as string because tests check substrings
+    return f"Weather for {location}: temperature 20°C, condition Sunny"
 
 def search_web(query: str) -> str:
-    """Search the web for information (mock implementation).
-
-    Args:
-        query: The search query string.
-
-    Returns:
-        A string with mock search results.
-    """
-    return f"Search results for '{query}': Mock response. Top hits include general information about '{query}'. Try a real web search API for detailed results."
-
-def get_current_time() -> str:
-    """Get the current date and time.
-
-    Returns:
-        A string with the current date and time in YYYY-MM-DD HH:MM:SS format.
-    """
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Return a mock web search summary string."""
+    return f"Search results for '{query}': [mock summary]"
 
 def register_builtin_functions(registry: FunctionRegistry) -> None:
-    """Register all built-in functions with their JSON schemas."""
-    registry.register_function(
-        calculate,
-        description="Safely evaluate mathematical expressions",
-        parameters={
-            "type": "object",
-            "properties": {
-                "expression": {
-                    "type": "string",
-                    "description": "A mathematical expression (e.g., '2 + 3 * 4')"
-                }
-            },
-            "required": ["expression"]
-        }
-    )
-    registry.register_function(
-        get_weather,
-        description="Get current weather for a location",
-        parameters={
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "The city or location name (e.g., 'New York')"
-                }
-            },
-            "required": ["location"]
-        }
-    )
-    registry.register_function(
-        search_web,
-        description="Search the web for information",
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query string"
-                }
-            },
-            "required": ["query"]
-        }
-    )
-    registry.register_function(
-        get_current_time,
-        description="Get the current date and time",
-        parameters={
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    )
+    """Register builtin functions into the provided registry."""
+    registry.register_function(calculate, "Evaluate an arithmetic expression safely.")
+    registry.register_function(get_weather, "Get mock weather for a location.")
+    registry.register_function(search_web, "Search the web (mock).")

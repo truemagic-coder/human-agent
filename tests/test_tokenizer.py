@@ -3,7 +3,7 @@ from human_agent.core.tokenizer import Tokenizer
 def test_tokenizer_creation():
     """Test tokenizer creation"""
     tokenizer = Tokenizer(vocab_size=1000)
-    assert tokenizer.vocab_size == 1000
+    assert tokenizer.max_vocab_size == 1000
     assert len(tokenizer.special_tokens) > 0
 
 def test_encode_decode():

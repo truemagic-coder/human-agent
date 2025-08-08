@@ -53,14 +53,23 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     logger.info(f"Model Config: {config}")
 
     # Create the tokenizer
-    tokenizer = Tokenizer(vocab_size=tokenizer_config['vocab_size'])
+    # Rebuild Tokenizer using saved config (matches the current Tokenizer API)
+    tokenizer = Tokenizer(
+        vocab_size=tokenizer_config['vocab_size'],
+        special_tokens=tokenizer_config['special_tokens']
+    )
+    # Overwrite vocab with trained vocab and rebuild id_to_token
     tokenizer.vocab = tokenizer_config['vocab']
-    tokenizer.reverse_vocab = {v: k for k, v in tokenizer_config['vocab'].items()}
-    tokenizer.special_tokens_set = set(tokenizer_config['special_tokens'])
-    tokenizer._compile_special_tokens_regex()
-    tokenizer.pad_token_id = tokenizer.vocab['<pad>']
-    tokenizer.eos_token_id = tokenizer.vocab['<eos>']
-    tokenizer.bos_token_id = tokenizer.vocab['<bos>']
+    tokenizer.special_tokens = tokenizer_config['special_tokens']
+    tokenizer.id_to_token = [None] * len(tokenizer.vocab)
+    for tok, idx in tokenizer.vocab.items():
+        if idx >= len(tokenizer.id_to_token):
+            tokenizer.id_to_token.extend([None] * (idx - len(tokenizer.id_to_token) + 1))
+        tokenizer.id_to_token[idx] = tok
+    # Refresh special token IDs
+    tokenizer.pad_token_id = tokenizer.vocab.get('<pad>', 0)
+    tokenizer.eos_token_id = tokenizer.vocab.get('<eos>', 3)
+    tokenizer.bos_token_id = tokenizer.vocab.get('<bos>', 2)
 
     # Create the model with the exact config it was trained with
     model = create_hrm_model(**config)

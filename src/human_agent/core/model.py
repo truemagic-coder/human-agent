@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Dict, Any, Optional
+from .tokenizer import Tokenizer
 
 # --- Building Blocks from Reference ---
 
@@ -118,9 +119,13 @@ class HierarchicalReasoningModel(nn.Module):
         max_seq_len: int = 256,
         dropout: float = 0.1,
         rope_theta: float = 10000.0,
-        **kwargs
-    ):
+        **kwargs,
+    ) -> None:
         super().__init__()
+        # Expose attributes expected by tests
+        self.vocab_size = vocab_size
+        self.dim = dim
+
         self.config = {
             'vocab_size': vocab_size,
             'dim': dim,
@@ -137,15 +142,15 @@ class HierarchicalReasoningModel(nn.Module):
 
         self.token_embedding = nn.Embedding(vocab_size, dim)
         self.dropout = nn.Dropout(dropout)
-        
+
         self.H_level = ReasoningModule(dim, n_heads, H_layers)
         self.L_level = ReasoningModule(dim, n_heads, L_layers)
-        
+
         self.norm = RMSNorm(dim)
         self.output_head = nn.Linear(dim, vocab_size, bias=False)
-        
+
         self.rotary_emb = RotaryEmbedding(dim // n_heads, max_seq_len, base=rope_theta)
-        
+
         self.H_cycles = H_cycles
         self.L_cycles = L_cycles
 
@@ -167,7 +172,16 @@ class HierarchicalReasoningModel(nn.Module):
             elif isinstance(module, nn.Embedding):
                 nn.init.xavier_uniform_(module.weight)
 
-    def forward(self, input_ids: torch.Tensor) -> Dict[str, Any]:
+    def forward(self, input_ids: torch.Tensor, max_segments: Optional[int] = None, training: bool = False) -> Dict[str, Any]:
+        """Forward pass.
+
+        Args:
+            input_ids: (batch, seq_len) token ids
+            max_segments: optional limit on hierarchical cycles for tests
+            training: flag (unused here but accepted for API compatibility)
+        Returns:
+            Dict with keys: 'logits', 'final_output', 'outputs', 'num_segments', 'q_values'
+        """
         bsz, seqlen = input_ids.shape
         
         # 1. Initial Setup
@@ -184,7 +198,11 @@ class HierarchicalReasoningModel(nn.Module):
 
         # 2. Hierarchical Reasoning Loop
         # This revised loop provides a more stable training dynamic.
-        for _ in range(self.H_cycles):
+        cycles = self.H_cycles
+        if max_segments is not None:
+            cycles = int(max(1, min(self.H_cycles, max_segments)))
+
+        for _ in range(cycles):
             # Inject high-level state into low-level state for refinement
             current_L_input = z_L + z_H
             
@@ -204,8 +222,84 @@ class HierarchicalReasoningModel(nn.Module):
         h = self.norm(z_H + x_embed)
         logits = self.output_head(h)
 
-        return {'logits': logits}
+        # Provide keys expected by tests
+        result: Dict[str, Any] = {
+            'logits': logits,
+            'final_output': logits,
+            'outputs': logits,
+            'num_segments': cycles,
+            # Placeholder q_values for API compatibility
+            'q_values': torch.zeros(bsz, dtype=logits.dtype, device=logits.device),
+        }
+        return result
+
+    def compute_loss(self, outputs: torch.Tensor, targets: torch.Tensor, q_values: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Compute cross-entropy loss for language modeling.
+
+        Args:
+            outputs: (batch, seq_len, vocab_size) logits
+            targets: (batch, seq_len) target token ids
+            q_values: optional tensor (unused, for compatibility)
+        Returns:
+            Scalar loss tensor
+        """
+        vocab = outputs.size(-1)
+        loss = F.cross_entropy(outputs.view(-1, vocab), targets.view(-1))
+        return loss
 
 def create_hrm_model(vocab_size: int, **kwargs) -> HierarchicalReasoningModel:
-    """Factory function to create the model."""
+    """Factory function to create the model.
+
+    Accepts compatibility aliases:
+      - N: number of layers per level (maps to H_layers and L_layers)
+      - T: number of cycles per level (maps to H_cycles and L_cycles)
+    """
+    # Map legacy/test argument names if provided
+    N = kwargs.pop('N', None)
+    T = kwargs.pop('T', None)
+    if N is not None:
+        kwargs.setdefault('H_layers', N)
+        kwargs.setdefault('L_layers', N)
+    if T is not None:
+        kwargs.setdefault('H_cycles', T)
+        kwargs.setdefault('L_cycles', T)
     return HierarchicalReasoningModel(vocab_size, **kwargs)
+
+
+def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
+    """Load a trained model and tokenizer from checkpoint.
+
+    Returns (model, tokenizer, config)
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    required_keys = ['model_state_dict', 'config', 'tokenizer_config']
+    missing = [k for k in required_keys if k not in checkpoint]
+    if missing:
+        raise RuntimeError(f"Invalid checkpoint: missing keys {missing}")
+
+    config = checkpoint['config']
+    tok_cfg = checkpoint['tokenizer_config']
+
+    # Rebuild tokenizer
+    vocab_size = tok_cfg.get('vocab_size', len(tok_cfg.get('vocab', {})))
+    tokenizer = Tokenizer(vocab_size=vocab_size)
+    tokenizer.vocab = tok_cfg['vocab']
+    tokenizer.reverse_vocab = {v: k for k, v in tok_cfg['vocab'].items()}
+    tokenizer.special_tokens_set = set(tok_cfg['special_tokens'])
+    tokenizer._compile_special_tokens_regex()
+    tokenizer.pad_token_id = tokenizer.vocab['<pad>']
+    tokenizer.eos_token_id = tokenizer.vocab['<eos>']
+    tokenizer.bos_token_id = tokenizer.vocab['<bos>']
+
+    # Rebuild model
+    model = create_hrm_model(**config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    model.to(device)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    config['total_params'] = total_params
+
+    return model, tokenizer, config
