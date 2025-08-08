@@ -70,6 +70,8 @@ def load_trained_model(checkpoint_path: str = 'hrm_trained_model.pt'):
     tokenizer.pad_token_id = tokenizer.vocab.get('<pad>', 0)
     tokenizer.eos_token_id = tokenizer.vocab.get('<eos>', 3)
     tokenizer.bos_token_id = tokenizer.vocab.get('<bos>', 2)
+    # Build reverse map for wrapper compatibility
+    tokenizer.reverse_vocab = {idx: tok for tok, idx in tokenizer.vocab.items()}
 
     # Create the model with the exact config it was trained with
     model = create_hrm_model(**config)
@@ -176,5 +178,6 @@ if __name__ == "__main__":
     params = model_config.get('total_params', 0)
     logger.info(f"Model: hrm-agent, {params:,} parameters ({params/1e9:.2f}B)")
     logger.info("API Docs: http://localhost:8000/docs")
-    
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
+    
